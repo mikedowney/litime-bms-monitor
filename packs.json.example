@@ -1,0 +1,11 @@
+{
+  "AA:BB:CC:DD:EE:01": {
+    "label": "Battery 1",
+    "serial": "read from the physical label - the BMS does not store it",
+    "note": "optional: physical location, e.g. outboard forward"
+  },
+  "AA:BB:CC:DD:EE:02": {
+    "label": "Battery 2",
+    "serial": "read from the physical label"
+  }
+}

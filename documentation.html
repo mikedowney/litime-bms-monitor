@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apogee BMS Monitor — Documentation</title>
+<style>
+  :root { --bg:#f2f3f4; --card:#fff; --ink:#1f2429; --dim:#6b7580;
+          --line:#dfe3e7; --ok:#2e9e5b; --warn:#d98420; --bad:#cc3b30;
+          --code:#f6f8f9; --accent:#2f6fd0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.65 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .layout { display:flex; max-width:1400px; margin:0 auto; }
+  nav { width:250px; flex:none; padding:24px 16px; position:sticky; top:0;
+        height:100vh; overflow-y:auto; border-right:1px solid var(--line);
+        background:var(--card); }
+  nav h3 { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+           color:var(--dim); margin:18px 0 6px; }
+  nav a { display:block; padding:3px 8px; color:var(--ink); text-decoration:none;
+          font-size:13.5px; border-radius:4px; }
+  nav a:hover { background:var(--bg); color:var(--accent); }
+  main { flex:1; padding:28px 34px 80px; min-width:0; }
+  h1 { font-size:27px; margin:0 0 4px; }
+  h2 { font-size:21px; margin:38px 0 10px; padding-bottom:7px;
+       border-bottom:2px solid var(--line); scroll-margin-top:16px; }
+  h3 { font-size:16px; margin:24px 0 7px; scroll-margin-top:16px; }
+  h4 { font-size:14px; margin:16px 0 5px; color:var(--dim);
+       text-transform:uppercase; letter-spacing:.04em; }
+  p, li { max-width:78ch; }
+  code { background:var(--code); padding:1px 5px; border-radius:3px;
+         font:13px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  pre { background:var(--code); border:1px solid var(--line); border-radius:6px;
+        padding:12px 14px; overflow-x:auto;
+        font:13px/1.55 ui-monospace,Menlo,Consolas,monospace; }
+  pre code { background:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:12px 0; font-size:13.5px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line);
+           vertical-align:top; }
+  th { background:var(--card); font-weight:600; font-size:12px;
+       text-transform:uppercase; letter-spacing:.03em; color:var(--dim); }
+  tr:nth-child(even) td { background:#fafbfb; }
+  .box { border-left:4px solid var(--accent); background:var(--card);
+         padding:12px 16px; border-radius:0 6px 6px 0; margin:16px 0; }
+  .box.warn { border-color:var(--warn); }
+  .box.bad { border-color:var(--bad); }
+  .box.ok { border-color:var(--ok); }
+  .box p:first-child { margin-top:0; } .box p:last-child { margin-bottom:0; }
+  .lead { font-size:16px; color:var(--dim); margin-bottom:22px; }
+  .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:10px;
+         background:#eceff1; color:var(--dim); font-weight:600; }
+  footer { margin-top:60px; padding-top:18px; border-top:1px solid var(--line);
+           color:var(--dim); font-size:13px; }
+  a { color:var(--accent); }
+  @media (max-width:880px) { nav { display:none; } main { padding:20px; } }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <strong style="font-size:14px">BMS Monitor</strong>
+  <h3>Getting started</h3>
+  <a href="#overview">Overview</a>
+  <a href="#hardware">Hardware</a>
+  <a href="#theory">Theory of operation</a>
+  <h3>Reference</h3>
+  <a href="#protocol">BLE protocol</a>
+  <a href="#files">Files &amp; layout</a>
+  <a href="#database">Database schema</a>
+  <a href="#api">HTTP API</a>
+  <a href="#dashboard">Dashboard</a>
+  <h3>Operations</h3>
+  <a href="#install">Installation</a>
+  <a href="#admin">Administration</a>
+  <a href="#bmsq">Query tool</a>
+  <a href="#troubleshooting">Troubleshooting</a>
+  <a href="#alerts">Alerting</a>
+  <h3>Interpretation</h3>
+  <a href="#thresholds">Thresholds</a>
+  <a href="#quirks">Known quirks</a>
+  <a href="#system">Wider system notes</a>
+  <a href="#history">Project history</a>
+</nav>
+
+<main>
+<h1>Apogee — BMS Monitor</h1>
+<p class="lead">Bluetooth telemetry from four LiTime LiFePO4 house batteries,
+collected on the Cerbo GX, stored locally, and served as a dashboard and API.</p>
+
+<p><a href="/">&larr; Back to the dashboard</a></p>
+
+<!-- ================================================================= -->
+<h2 id="overview">Overview</h2>
+
+<p>The four house batteries have Bluetooth BMS modules that expose far more
+detail than the LiTime phone app shows. The app reports only "balance OK, cells
+OK, BMS OK". The BMS itself reports individual cell voltages, two temperatures,
+per-pack current, capacity, cycle count, balancing state and protection
+flags.</p>
+
+<p>This system polls all four packs over Bluetooth Low Energy from the Cerbo GX,
+stores every reading in a local SQLite database, and presents it through a web
+dashboard and a JSON API. The API also feeds the automated daily AI analysis
+that runs in Node-RED.</p>
+
+<div class="box ok">
+<p><strong>What this is not.</strong> It registers nothing on the Victron dbus.
+It does not create a battery service, cannot be selected by DVCC, and cannot
+influence charging in any way. It is read-only monitoring. This is deliberate:
+an earlier attempt using <code>dbus-serialbattery</code> did register as a
+controlling BMS, which caused the solar chargers to latch into
+<code>Err 67 — No BMS</code> and stop charging when the Bluetooth connection
+dropped.</p>
+</div>
+
+<h4>Why it matters</h4>
+<p>The primary purpose is detecting when a BMS drops offline. Four packs in
+parallel are each rated 200&nbsp;A continuous. With all four online a 236&nbsp;A
+load is 59&nbsp;A per pack. With two offline it is 118&nbsp;A each — still
+within rating. You do not exceed a pack's limit until <em>three</em> are
+offline. But without this system you would have no way of knowing how many are
+participating, because the SmartShunt sees only the bank total.</p>
+
+<!-- ================================================================= -->
+<h2 id="hardware">Hardware</h2>
+
+<h3>Batteries</h3>
+<p>Four <strong>LiTime 12.8V 320Ah Smart Mini Edition</strong> LiFePO4 packs,
+wired in parallel as a 1280&nbsp;Ah house bank.</p>
+
+<table>
+<tr><th>Rated</th><th>Value</th></tr>
+<tr><td>Nominal voltage</td><td>12.8 V (4 cells in series)</td></tr>
+<tr><td>Rated capacity</td><td>320 Ah / 4096 Wh</td></tr>
+<tr><td>Charging voltage</td><td>14.4 V ±0.2 V</td></tr>
+<tr><td>Max continuous charge / discharge</td><td>200 A</td></tr>
+<tr><td>Max continuous output power</td><td>2560 W</td></tr>
+<tr><td>FCC ID</td><td>2BDSV12320</td></tr>
+<tr><td>BMS firmware</td><td>2.0.0, build 2025-08-13 (all four identical)</td></tr>
+</table>
+
+<h4>Identification</h4>
+<p>Each pack carries two codes on its label: a barcode with the app serial, and
+a small QR sticker with the BLE advertising name.</p>
+
+<table>
+<tr><th>Label</th><th>App serial</th><th>BLE name</th><th>MAC</th></tr>
+<tr><td>Battery 1</td><td><serial from label></td><td>L-12320BNN130-B02220</td><td>AA:BB:CC:DD:EE:03</td></tr>
+<tr><td>Battery 2</td><td><serial from label></td><td>L-12320BNN130-B02291</td><td>AA:BB:CC:DD:EE:04</td></tr>
+<tr><td>Battery 3</td><td><serial from label></td><td>L-12320BNN130-B02290</td><td>AA:BB:CC:DD:EE:01</td></tr>
+<tr><td>Battery 4</td><td><serial from label></td><td>L-12320BNN130-B01950</td><td>AA:BB:CC:DD:EE:02</td></tr>
+</table>
+
+<div class="box">
+<p>Battery 4 has a <strong>BALV</strong> model prefix and a different serial
+block from the other three, indicating a separate production run. Its printed
+specifications and BMS firmware are identical, and it shares current normally.
+The prefix has no known functional significance.</p>
+<p>The BMS does <em>not</em> store the app serial number — a serial-number query
+returns twenty bytes of <code>0xFF</code>. The mapping above was established
+from the physical labels and cannot be recovered over Bluetooth.</p>
+</div>
+
+<h3>Host</h3>
+<table>
+<tr><th>Item</th><th>Detail</th></tr>
+<tr><td>GX device</td><td>Cerbo GX, Venus OS v3.79 Large, hostname <code>einstein</code></td></tr>
+<tr><td>Bluetooth adapter</td><td>Realtek, BD address 68:4E:05:44:70:59, USB bus</td></tr>
+<tr><td>Network</td><td>Wired Ethernet to UniFi Express</td></tr>
+<tr><td>System timezone</td><td>UTC (Victron default — see <a href="#quirks">Known quirks</a>)</td></tr>
+</table>
+
+<div class="box warn">
+<p>The Cerbo's Wi-Fi and Bluetooth share a single combo radio module. Because
+the Cerbo is on Ethernet, Bluetooth has the radio to itself. <strong>If the
+Cerbo is ever moved back to Wi-Fi, expect BLE polling reliability to
+degrade.</strong></p>
+<p><strong>Settings → Connectivity → Bluetooth (for VictronConnect App) must
+remain Disabled.</strong> When enabled, Venus reconnects roughly every minute
+and takes the adapter away from the collector. The MPPTs, SmartShunt and Orions
+each have their own radios and are unaffected by this setting.</p>
+</div>
+
+<h3>Rest of the electrical system</h3>
+<table>
+<tr><th>Device</th><th>Role</th></tr>
+<tr><td>MultiPlus 12/3000/120-50</td><td>Inverter/charger, 13.9 V absorption, 13.6 V float, 100 A charge limit</td></tr>
+<tr><td>SmartShunt 500 A</td><td>Bank battery monitor — <strong>authoritative</strong> for state of charge</td></tr>
+<tr><td>3 × SmartSolar MPPT</td><td>Solar charge controllers (instances 277, 278, 288)</td></tr>
+<tr><td>2 × Orion XS 12/12-50</td><td>Alternator-to-house DC-DC chargers, one per engine</td></tr>
+</table>
+
+<!-- ================================================================= -->
+<h2 id="theory">Theory of operation</h2>
+
+<pre><code>  4 × LiTime BMS
+        │  Bluetooth Low Energy (GATT notifications)
+        ▼
+  BlueZ  ──D-Bus──►  bms_service.py  (poller thread)
+                            │
+                            ├──►  SQLite  /data/bms/bms.db
+                            │
+                            └──►  HTTP server, port 8088
+                                    ├──► dashboard.html   (browser)
+                                    ├──► /bms/summary     (Node-RED → AI report)
+                                    └──► bmsq             (command line)</code></pre>
+
+<h3>Collection</h3>
+<p>A single background thread polls the packs in round-robin order. For each
+pack it connects over BLE, writes an eight-byte status request, reassembles the
+105-byte reply from MTU-sized notification fragments, verifies the checksum,
+decodes it, and writes one row to <code>samples</code>. Every attempt — success
+or failure — also writes a row to <code>polls</code>, which is what makes the
+reliability statistics possible.</p>
+
+<p>Packs are polled <strong>sequentially, never in parallel</strong>. Each BMS
+accepts only one BLE client at a time, and the adapter handles one connection
+setup more reliably than four at once. Between packs the poller waits
+<code>--settle</code> seconds (default 12) so BlueZ can finish tearing the
+previous link down.</p>
+
+<h3>Persistent discovery</h3>
+<div class="box">
+<p>Venus OS has <strong>no persistent BlueZ device storage</strong> —
+<code>/var/lib/bluetooth/&lt;adapter&gt;/</code> does not exist. Nothing is
+bonded, <code>trust</code> is not saved across restarts, and the device cache
+lives only in memory. BlueZ prunes devices it has not seen recently.</p>
+<p>Consequence: packs silently vanish from the D-Bus object tree and become
+unreachable, which presented as two of four packs failing every cycle. The
+collector therefore <strong>keeps one discovery session open permanently</strong>
+and re-checks it each cycle. This is not a workaround for a transient fault; it
+is the structural fix for how this platform behaves.</p>
+</div>
+
+<h3>Storage and retention</h3>
+<p>SQLite in WAL mode. Raw samples are kept for <code>--prune-days</code> (30 by
+default), then folded into a <code>daily</code> rollup table holding min/max and
+alarm state per pack per day, and deleted. Roughly 530 bytes per sample; at a
+60-second interval that is about 2&nbsp;MB/day and 60&nbsp;MB for a 30-day
+window.</p>
+
+<h3>Derived metrics</h3>
+<p>Two figures are computed rather than read from the BMS:</p>
+<ul>
+<li><strong>SoC drift</strong> — the BMS's reported state of charge compared
+against its own remaining ÷ capacity arithmetic. Exposes a counter that has
+overrun; one pack has been observed at 114%.</li>
+<li><strong>Internal resistance</strong> — the difference between the sum of
+cell voltages and the terminal voltage, fitted against current. The slope is the
+resistance of the FETs, shunt, busbars and welds. See
+<a href="#thresholds">Thresholds</a>.</li>
+</ul>
+
+<!-- ================================================================= -->
+<h2 id="protocol">BLE protocol</h2>
+
+<p>Reverse-engineered from the LiTime app by the
+<code>calledit/LiTime_BMS_bluetooth</code> project, then verified here against
+more than 3,000 captured frames from these specific packs.</p>
+
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Service UUID</td><td><code>0000ffe0-0000-1000-8000-00805f9b34fb</code></td></tr>
+<tr><td>Notify characteristic</td><td><code>0000ffe1-…</code></td></tr>
+<tr><td>Write characteristic</td><td><code>0000ffe2-…</code></td></tr>
+<tr><td>MTU</td><td>23 — a 105-byte frame arrives as six fragments</td></tr>
+<tr><td>Clients</td><td>One at a time. The phone app will block the collector.</td></tr>
+</table>
+
+<h3>Frame format</h3>
+<pre><code>byte 0-1    00 00
+byte 2      payload length; TOTAL FRAME LENGTH = byte[2] + 4
+byte 3      01
+byte 4      opcode; responses set bit 7 (request 0x13 → response 0x93)
+byte 5-6    55 AA
+byte 7      00 in responses / checksum position in the 8-byte request
+...         payload
+last byte   checksum = sum of all preceding bytes &amp; 0xFF</code></pre>
+
+<h3>Commands</h3>
+<p>Request frame is <code>00 00 04 01 &lt;opcode&gt; 55 AA &lt;checksum&gt;</code>.</p>
+<table>
+<tr><th>Opcode</th><th>Function</th><th>Notes</th></tr>
+<tr><td>0x13</td><td>Status</td><td>The only one this system uses. 105-byte reply.</td></tr>
+<tr><td>0x16</td><td>Version</td><td>Returns 2.0.0, build date, hardware strings</td></tr>
+<tr><td>0x10</td><td>Serial number</td><td>Returns 0xFF × 20 — not programmed</td></tr>
+<tr><td>0x0A / 0x0B</td><td>Charge FET on / off</td><td class="tag">not used</td></tr>
+<tr><td>0x0C / 0x0D</td><td>Discharge FET on / off</td><td class="tag">not used</td></tr>
+</table>
+
+<div class="box warn">
+<p>The published reference implementation hardcodes <strong>incorrect
+checksums</strong> for the discharge FET commands (it sends 0x0E and 0x0F where
+the correct values are 0x10 and 0x11). Always compute the checksum rather than
+copying constants. This system computes it, but never sends write commands.</p>
+</div>
+
+<h3>Status frame byte map</h3>
+<table>
+<tr><th>Bytes</th><th>Field</th><th>Encoding</th></tr>
+<tr><td>8–11</td><td>Terminal voltage</td><td>u32, mV</td></tr>
+<tr><td>12–15</td><td>Sum of cell voltages</td><td>u32, mV</td></tr>
+<tr><td>16–47</td><td>16 cell slots</td><td>u16 each, mV; zero = absent (4 populated)</td></tr>
+<tr><td>48–51</td><td>Current</td><td>s32, mA; positive = charging</td></tr>
+<tr><td>52–53</td><td>Cell temperature</td><td>s16, °C</td></tr>
+<tr><td>54–55</td><td>MOSFET temperature</td><td>s16, °C</td></tr>
+<tr><td>56–61</td><td><em>unused</em></td><td>zero in every observed frame</td></tr>
+<tr><td>62–63</td><td>Remaining capacity</td><td>u16, 0.01 Ah</td></tr>
+<tr><td>64–67</td><td>Full charge capacity</td><td>u32, 0.01 Ah — learned per pack</td></tr>
+<tr><td>68–71</td><td>FET state</td><td>0x80 discharge disabled; 0x48 not accepting charge</td></tr>
+<tr><td>72–75</td><td>Balance memory</td><td>bit 0x4 latches once balancing has run</td></tr>
+<tr><td>76–79</td><td>Protection bitfield</td><td>see below</td></tr>
+<tr><td>80–83</td><td>Failure bitfield</td><td>never observed non-zero</td></tr>
+<tr><td>84–87</td><td>Cell balancing bitmap</td><td>bit per cell</td></tr>
+<tr><td>88–89</td><td>Battery state</td><td>0 idle, 1 charging, 2 discharging, 4 charge disabled</td></tr>
+<tr><td>90–91</td><td>State of charge</td><td>u16, % — equals remaining ÷ capacity</td></tr>
+<tr><td>92–95</td><td>State of health</td><td>u32, %</td></tr>
+<tr><td>96–99</td><td>Cycle count</td><td>u32</td></tr>
+<tr><td>100–103</td><td>Lifetime discharged</td><td>u32, Ah</td></tr>
+</table>
+
+<h4>FET state (bytes 68–71)</h4>
+<table>
+<tr><th>Bit</th><th>Meaning</th><th>Confidence</th></tr>
+<tr><td><code>0x80</code></td><td><strong>Discharge disabled.</strong> The pack is
+  electrically isolated and carries none of the load. Set by the discharge
+  switch in the LiTime app; persists until switched back on.</td>
+  <td>Confirmed 2026-09-15 by toggling the app switch with the collector
+  stopped and observing the flag change in both directions. Matches the
+  reference implementation's documented <code>0x00000080</code>.</td></tr>
+<tr><td><code>0x48</code></td><td>Not accepting charge — the pack considers
+  itself full and has opened its charge FET. <strong>Normal.</strong> Every
+  healthy pack sets this at the top of charge; it appears in roughly a fifth of
+  all logged samples.</td>
+  <td>Inferred from correlation with full charge across all four packs. Which
+  of <code>0x08</code> and <code>0x40</code> does what individually is unknown;
+  they have only ever been observed together.</td></tr>
+</table>
+
+<div class="box bad">
+<p><strong>A pack with discharge disabled reports no protection bit, no failure
+bit, and perfectly healthy cells.</strong> Nothing in the alarm fields shows it.
+Battery 4 ran isolated from 2026-09-13 to 2026-09-15 and was only found because
+the terminal voltage tracked the bank while its cell voltages stayed frozen, and
+because three packs accounted for the entire SmartShunt current during a 100 A
+load test.</p>
+</div>
+
+<h4>Protection bits (bytes 76–79)</h4>
+<pre><code>0x00000004  over charge          0x00000200  high temperature 2
+0x00000020  over discharge       0x00000400  low temperature 1
+0x00000040  charge over current  0x00000800  low temperature 2
+0x00000080  discharge over cur.  0x00004000  short circuit
+0x00000100  high temperature 1</code></pre>
+
+<div class="box bad">
+<p><strong>These bit definitions are inherited from another battery model and
+have never been validated on this hardware</strong>, because no protection event
+has yet occurred. The field decodes correctly and reads zero on healthy packs,
+but which bit means what is unproven. Treat any non-zero value as "something
+tripped" and investigate directly rather than trusting the label.</p>
+</div>
+
+<!-- ================================================================= -->
+<h2 id="files">Files &amp; layout</h2>
+
+<p>Everything lives under <code>/data</code>, which survives Venus OS firmware
+updates. The root filesystem is around 92% full — <strong>do not install
+packages there</strong>.</p>
+
+<table>
+<tr><th>Path</th><th>Purpose</th></tr>
+<tr><td><code>/data/bms/bms_service.py</code></td><td>Collector, database layer, HTTP API</td></tr>
+<tr><td><code>/data/bms/litime_bluez.py</code></td><td>BLE transport and protocol decoder; also a standalone CLI probe</td></tr>
+<tr><td><code>/data/bms/dashboard.html</code></td><td>Web dashboard, served at <code>/</code></td></tr>
+<tr><td><code>/data/bms/documentation.html</code></td><td>This document, served at <code>/docs</code></td></tr>
+<tr><td><code>/data/bms/bmsq</code></td><td>Command-line query tool</td></tr>
+<tr><td><code>/data/bms/packs.json</code></td><td>Pack identity: MAC → label, serial, BLE name. Serials come from the physical labels; the BMS does not store them.</td></tr>
+<tr><td><code>/data/bms/install.sh</code></td><td>Service registration and configuration</td></tr>
+<tr><td><code>bms-alerts-flow.json</code></td><td>Node-RED alert flow, imported once — not stored on the GX</td></tr>
+<tr><td><code>/data/bms/bms.db</code></td><td>SQLite database (plus <code>-wal</code> and <code>-shm</code>)</td></tr>
+<tr><td><code>/data/bms/service/run</code></td><td>daemontools run script — holds all runtime settings</td></tr>
+<tr><td><code>/data/rc.local</code></td><td>Recreates the <code>/service</code> symlink at boot</td></tr>
+<tr><td><code>/var/log/bms-collector/current</code></td><td>Log, rotated at 1 MB, 5 files kept</td></tr>
+</table>
+
+<h4>Dependencies</h4>
+<p>Python standard library plus <code>python3-dbus</code> and
+<code>python3-gi</code>, both of which Venus OS already ships. <strong>Nothing
+needs installing.</strong> Note that Venus's Python is stripped and lacks the
+<code>statistics</code> module, so a local <code>mean()</code> helper is used
+instead.</p>
+
+<!-- ================================================================= -->
+<h2 id="database">Database schema</h2>
+
+<h4>samples</h4>
+<p>One row per successful poll. 39 columns.</p>
+<table>
+<tr><th>Group</th><th>Columns</th></tr>
+<tr><td>Identity</td><td><code>ts</code>, <code>mac</code>, <code>label</code></td></tr>
+<tr><td>Measurements</td><td><code>voltage</code>, <code>cells_sum</code>, <code>v_drop</code>, <code>current</code>, <code>power</code>, <code>temp_cell</code>, <code>temp_mosfet</code></td></tr>
+<tr><td>Cells</td><td><code>cells</code>, <code>cells_all</code>, <code>cell_count</code>, <code>cell_min</code>, <code>cell_max</code>, <code>cell_delta_mv</code></td></tr>
+<tr><td>Capacity</td><td><code>remaining_ah</code>, <code>capacity</code>, <code>soc</code>, <code>soc_computed</code>, <code>soc_drift</code>, <code>soh</code>, <code>cycles</code>, <code>total_discharged_ah</code></td></tr>
+<tr><td>Flags</td><td><code>state</code>, <code>state_raw</code>, <code>protections</code>, <code>protection_raw</code>, <code>failure_raw</code>, <code>balancing</code>, <code>balancing_raw</code>, <code>balance_memory_raw</code>, <code>flags68_raw</code>, <code>full_charge</code>, <code>balance_latch</code></td></tr>
+<tr><td>Reserved</td><td><code>reserved56_raw</code>, <code>reserved60_raw</code>, <code>frame_len</code></td></tr>
+<tr><td>Raw</td><td><code>raw</code> — full frame hex</td></tr>
+</table>
+
+<div class="box ok">
+<p>Flags are stored as <strong>integers, not hex strings</strong>, so bitwise
+SQL works directly: <code>WHERE protection_raw &amp; 4</code> finds over-charge
+events.</p>
+<p>The <code>raw</code> column is deliberate insurance. If any byte-offset
+interpretation later proves wrong, every sample can be re-decoded from the
+database without re-collecting anything.</p>
+</div>
+
+<h4>polls</h4>
+<p><code>ts</code>, <code>mac</code>, <code>ok</code>, <code>error</code>. One
+row per attempt. This is what distinguishes "the pack is quiet" from "the pack
+did not answer".</p>
+
+<h4>daily</h4>
+<p>Keyed on (<code>day</code>, <code>mac</code>). Populated automatically as raw
+samples age out, so long-term trends survive pruning.</p>
+
+<!-- ================================================================= -->
+<h2 id="api">HTTP API</h2>
+
+<p>Bound per <code>--bind</code> in the run script. Read-only; there are no
+write endpoints and no authentication.</p>
+
+<div class="box">
+<p><strong>Every windowed endpoint accepts either form.</strong>
+<code>?hours=N</code> for a rolling window, or <code>?from=&amp;to=</code> for an
+explicit range. Accepted date formats are <code>YYYY-MM-DD HH:MM:SS</code>,
+<code>YYYY-MM-DD HH:MM</code>, <code>YYYY-MM-DD</code>, and the
+<code>T</code>-separated form a browser sends. Unparseable input falls back to
+the default window rather than erroring.</p>
+<pre><code>/bms/summary?from=2026-09-11 18:00&amp;to=2026-09-12 02:00
+/bms/history?from=2026-09-11T18:00&amp;to=2026-09-11T22:00</code></pre>
+<p><code>/bms/summary</code> returns <code>window_is_live</code> and
+<code>window_end</code> so a caller can tell a historical window from a current
+one. Staleness is judged against the end of the window, not the clock -
+otherwise every pack looks stale on a historical query.</p>
+</div>
+
+<table>
+<tr><th>Endpoint</th><th>Returns</th></tr>
+<tr><td><code>/</code></td><td>The dashboard</td></tr>
+<tr><td><code>/docs</code></td><td>This documentation</td></tr>
+<tr><td><code>/logs</code></td><td>Last few hundred collector log lines, colour-coded, auto-refreshing. For troubleshooting from the helm without an SSH session.</td></tr>
+<tr><td><code>/logs.txt?lines=500</code></td><td>The same as plain text</td></tr>
+<tr><td><code>/health</code></td><td>Sample count and age of the newest sample</td></tr>
+<tr><td><code>/bms/latest</code></td><td>Most recent full row per pack</td></tr>
+<tr><td><code>/bms/summary?hours=24</code></td><td>Condensed statistics, alarms, sharing, resistance, baselines. <strong>This is what Node-RED sends to the AI.</strong> ~5 KB.</td></tr>
+<tr><td><code>/bms/history?hours=6&amp;max_points=400</code></td><td>Downsampled time series for charting</td></tr>
+<tr><td><code>/bms/states?hours=24</code></td><td>Status segments and alarm events, computed from <em>every</em> sample</td></tr>
+<tr><td><code>/bms/packs</code></td><td>Static identity table: label, serial, BLE name, MAC</td></tr>
+<tr><td><code>/bms/reliability?hours=24</code></td><td>Poll success rate per pack</td></tr>
+<tr><td><code>/bms/resistance?days=30&amp;min_current=10</code></td><td>Fitted internal resistance per pack</td></tr>
+<tr><td><code>/bms/series?hours=6&amp;field=voltage</code></td><td>Single-field series</td></tr>
+</table>
+
+<!-- ================================================================= -->
+<h2 id="dashboard">Dashboard</h2>
+
+<p>Served at the root of the collector's port. Self-contained: no external
+scripts, no CDN, no internet required. Charts are drawn on a canvas by hand.</p>
+
+<h3>Layout</h3>
+<table>
+<tr><th>Element</th><th>Shows</th></tr>
+<tr><td>Banner</td><td>Packs reporting, alarm flags, discharge disabled. <strong>Always live</strong>, regardless of the chart window.</td></tr>
+<tr><td>Pack cards</td><td>Voltage, current, cells with their sum and offset from the terminals, spread, temperatures, SoC drift, cycles, internal resistance, FET state, and the pack's serial/BLE name/MAC. Also always live.</td></tr>
+<tr><td>Alarm &amp; status timeline</td><td>One track per pack: clear, balancing, alarm, discharge disabled, or no data. Built from <em>every</em> stored sample, so a brief event cannot slip between chart points.</td></tr>
+<tr><td>Cell spread</td><td>With shaded bands that move with the bank's condition</td></tr>
+<tr><td>Current per pack</td><td>Sharing and participation</td></tr>
+<tr><td>FET state</td><td>Two tracks per pack: charge and discharge. Green conducting, amber charge FET open, red discharge disabled, grey no data.</td></tr>
+<tr><td>Pack terminal voltage</td><td>Raw readings — see the calibration note below</td></tr>
+<tr><td>State of charge</td><td>Four independent counters, expected to disagree</td></tr>
+<tr><td>Cell voltage range</td><td>Highest solid, lowest dashed, per pack</td></tr>
+<tr><td>Temperature</td><td>Cell solid, MOSFET dashed, per pack</td></tr>
+<tr><td>Tables</td><td>Poll reliability, internal resistance, capacity and wear</td></tr>
+</table>
+
+<h3>Controls</h3>
+<ul>
+<li><strong>Click any pack name in a legend</strong> to hide or show it across
+every chart at once. Useful when four near-identical traces overlap.</li>
+<li><strong>Time range</strong> presets from 1 hour to 7 days, plus
+<em>Custom range…</em> which reveals two datetime pickers. Only the charts
+follow the selected window; cards and banner stay live.</li>
+<li>Charts spanning more than a day draw a dashed rule at each local midnight
+with the date, and switch to date-aware axis labels.</li>
+<li>Auto-refreshes every 60 seconds.</li>
+</ul>
+
+<div class="box warn">
+<p><strong>Terminal voltages are not comparable between packs.</strong> The packs
+are hard-paralleled, so the true voltage is identical for all four; the 50–150 mV
+spread you see is each BMS's own pack-voltage calibration offset.</p>
+<p>Measured on this bank, the offsets are stable to about 6 mV each:
+Battery&nbsp;1 +99, Battery&nbsp;2 +37, Battery&nbsp;3 +53, Battery&nbsp;4 +49 mV.
+Subtracting them collapses the pack-to-pack disagreement at rest from 63 mV to
+14 mV — the same agreement the cell sums achieve with no correction at all.</p>
+<p><strong>Compare cell sums between packs instead.</strong> Three independent
+BMS have been observed agreeing within 1 mV and matching the SmartShunt, which
+is strong evidence the cell measurement chain is accurate and the pack-voltage
+channel is the one carrying the error.</p>
+</div>
+
+<!-- ================================================================= -->
+<h2 id="install">Installation</h2>
+
+<pre><code>mkdir -p /data/bms
+# copy bms_service.py litime_bluez.py dashboard.html documentation.html
+#      bmsq install.sh into /data/bms/
+
+cat &gt; /data/bms/packs.json &lt;&lt;'EOF'
+{
+  "AA:BB:CC:DD:EE:03": "Battery 1",
+  "AA:BB:CC:DD:EE:04": "Battery 2",
+  "AA:BB:CC:DD:EE:01": "Battery 3",
+  "AA:BB:CC:DD:EE:02": "Battery 4"
+}
+EOF
+
+chmod +x /data/bms/bmsq /data/bms/install.sh
+sh /data/bms/install.sh</code></pre>
+
+<p>Verify the BLE path before registering the service:</p>
+<pre><code>cd /data/bms
+python3 litime_bluez.py --scan
+python3 litime_bluez.py --address AA:BB:CC:DD:EE:01 --count 3 --raw</code></pre>
+
+<h4>Configuration</h4>
+<p>All runtime settings live in <code>/data/bms/service/run</code>. Re-running
+the installer <strong>preserves</strong> whatever is already set; only values
+passed on the command line change.</p>
+<pre><code>sh install.sh --show              # print current settings
+sh install.sh --interval 120      # change one thing, keep the rest
+sh install.sh --bind 127.0.0.1    # restrict the API to this GX
+sh install.sh --tz Europe/Lisbon  # if the vessel relocates
+sh install.sh --remove            # unregister; database untouched</code></pre>
+
+<table>
+<tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>--bind</code></td><td>0.0.0.0</td><td>0.0.0.0 exposes the dashboard to the LAN; 127.0.0.1 restricts to Node-RED</td></tr>
+<tr><td><code>--port</code></td><td>8088</td><td>Separate from Node-RED on 8080</td></tr>
+<tr><td><code>--interval</code></td><td>60 s</td><td>Between cycles. Full cycle ≈ interval + 4 × settle.</td></tr>
+<tr><td><code>--settle</code></td><td>12 s</td><td>Between packs. Lower values cause connection failures.</td></tr>
+<tr><td><code>--prune-days</code></td><td>30</td><td>Raw sample retention</td></tr>
+<tr><td><code>TZ</code></td><td>America/Los_Angeles</td><td>Process-only; the system stays on UTC</td></tr>
+</table>
+
+<!-- ================================================================= -->
+<h2 id="admin">Administration</h2>
+
+<pre><code>svstat  /service/bms-collector          status and uptime
+svc -t  /service/bms-collector          restart (after config or code change)
+svc -d  /service/bms-collector          stop
+svc -u  /service/bms-collector          start
+
+tail -f /var/log/bms-collector/current  follow the log
+curl -s localhost:8088/health</code></pre>
+
+<p>The service is supervised by daemontools and restarts automatically if it
+crashes. <code>/service</code> is rebuilt at every boot and firmware update, so
+<code>/data/rc.local</code> recreates the symlink — verify after any Venus OS
+upgrade:</p>
+<pre><code>ls -l /service/bms-collector</code></pre>
+
+<h4>Changing the pack set</h4>
+<p>Edit <code>/data/bms/packs.json</code> and restart. Labels are stored with
+each sample, so renaming a pack does not rewrite history; old rows keep the old
+label.</p>
+
+<!-- ================================================================= -->
+<h2 id="bmsq">Query tool</h2>
+
+<p><code>bmsq</code> exists because installing the <code>sqlite3</code>
+command-line package would consume scarce space on the root filesystem. It uses
+Python's built-in sqlite3 module and sets the boat timezone for itself.</p>
+
+<pre><code>./bmsq                          default report
+./bmsq --latest                 newest reading per pack
+./bmsq --reliability 24         poll success plus recent failures
+./bmsq --alarms 168             any alarm or balancing activity
+./bmsq --tables                 schema and row counts
+./bmsq --csv "SELECT ..."       CSV output for piping
+./bmsq "SELECT ..."             arbitrary SQL</code></pre>
+
+<h4>Useful queries</h4>
+<pre><code># Current sharing during real load
+./bmsq "SELECT label, COUNT(*) n, ROUND(AVG(current),2) avg_a
+        FROM samples WHERE current &lt; -10 GROUP BY label"
+
+# Is a pack's FET open? v_drop inverts when cells are isolated
+./bmsq "SELECT label, ROUND(AVG(v_drop),3) avg_vdrop,
+        SUM(CASE WHEN current=0 THEN 1 ELSE 0 END) zero_current
+        FROM samples GROUP BY label"
+
+# Capacity trend from the rollup table
+./bmsq "SELECT day, mac, cycles, delta_max FROM daily ORDER BY day DESC LIMIT 20"</code></pre>
+
+<div class="box warn">
+<p><code>drop</code> is a reserved word in SQLite. Alias <code>v_drop</code> as
+something else, or quote it.</p>
+</div>
+
+<!-- ================================================================= -->
+<h2 id="troubleshooting">Troubleshooting</h2>
+
+<div class="box ok">
+<p><strong>Start at <a href="/logs">/logs</a>.</strong> The last few hundred log
+lines, with failures in red and discovery or prune events in amber, refreshing
+every 30 seconds. Readable from a phone at the helm without an SSH session.
+It shows the current log file only — roughly a day and a half at the normal poll
+rate. The database is the long-term record.</p>
+</div>
+
+<h3>Dashboard unreachable</h3>
+<pre><code>svstat /service/bms-collector
+netstat -tln | grep 8088
+grep bind /data/bms/service/run</code></pre>
+<p>If the process is up but the port is not listening, <code>--bind</code> is
+probably <code>127.0.0.1</code>. Historically this was caused by re-running an
+older installer that overwrote the setting; the current installer preserves
+it.</p>
+
+<h3>A pack stops reporting</h3>
+<pre><code>./bmsq --reliability 4
+./bmsq "SELECT mac, error, COUNT(*) n FROM polls
+        WHERE ok=0 AND ts &gt; strftime('%s','now')-14400 GROUP BY mac, error"</code></pre>
+
+<table>
+<tr><th>Error</th><th>Meaning</th><th>Action</th></tr>
+<tr><td><code>le-connection-abort-by-local</code></td><td>BlueZ aborted the attempt, usually radio contention</td><td>Normal at low rates. Increase <code>--settle</code> if frequent.</td></tr>
+<tr><td><code>device … not found after scan</code></td><td>BlueZ pruned the device from its object tree</td><td>Confirm discovery is running (<code>discovery (re)started</code> in the log). Restart the service.</td></tr>
+<tr><td><code>services did not resolve</code></td><td>Connected but GATT discovery failed</td><td>Restart the service; if persistent, cycle the adapter.</td></tr>
+<tr><td>All four failing</td><td>Adapter or service problem, not batteries</td><td>See below.</td></tr>
+</table>
+
+<h4>Reset the Bluetooth adapter</h4>
+<pre><code>svc -d /service/bms-collector
+hciconfig hci0 down &amp;&amp; hciconfig hci0 up
+sleep 3
+bluetoothctl --timeout 20 scan on | grep C8:47:80
+svc -u /service/bms-collector</code></pre>
+
+<div class="box bad">
+<p><strong>Check the phone first.</strong> Each BMS accepts one Bluetooth client
+at a time. If the LiTime app is open and connected to a pack, the collector
+cannot reach it and will log repeated failures for that pack only.</p>
+</div>
+
+<h3>Data looks wrong</h3>
+<p>Cross-check against Victron. Pack voltages should agree with the SmartShunt
+within a few tens of millivolts, and the sum of the four pack currents should
+approximate the SmartShunt bank current. A persistent shortfall means a pack is
+not participating.</p>
+
+<p>If a decoded field looks implausible, the raw frame is stored and can be
+re-examined:</p>
+<pre><code>./bmsq "SELECT datetime(ts,'unixepoch','localtime'), label, raw
+        FROM samples ORDER BY ts DESC LIMIT 4"</code></pre>
+
+<h3>Database growth</h3>
+<pre><code>du -h /data/bms/bms.db*
+df -h /data
+./bmsq "SELECT COUNT(*) FROM samples"</code></pre>
+<p>Expect roughly 2&nbsp;MB/day at a 60-second interval. Pruning runs once every
+24 hours and on startup. If space becomes tight, reduce
+<code>--prune-days</code> or lengthen <code>--interval</code>.</p>
+
+<!-- ================================================================= -->
+<h2 id="alerts">Alerting</h2>
+
+<p>Two independent paths, deliberately separated by what each is good at.</p>
+
+<table>
+<tr><th></th><th>Deterministic alerts</th><th>Daily AI report</th></tr>
+<tr><td>Where</td><td>Node-RED, <strong>BMS Alerts</strong> tab</td><td>Node-RED, <strong>Victron Analysis</strong> tab</td></tr>
+<tr><td>Cadence</td><td>Every 15 minutes</td><td>Once daily</td></tr>
+<tr><td>Purpose</td><td>Conditions needing action now</td><td>Trends, context, comparison over time</td></tr>
+<tr><td>Method</td><td>Explicit thresholds in a function node</td><td>Gemini, given the data and instructions</td></tr>
+<tr><td>Can it miss something?</td><td>Only if a rule is absent</td><td>Yes — an LLM may vary between runs</td></tr>
+<tr><td>Can it invent something?</td><td>No</td><td>Yes — it has done, see below</td></tr>
+</table>
+
+<div class="box">
+<p><strong>Why the split.</strong> The AI is good at "Battery 1's resistance has
+crept up over three weeks", which is hard to express as a threshold. It is not
+the right tool for "a pack is offline right now", because it runs once a day,
+may phrase things differently each time, and cannot be relied on to notice its
+own input is missing. The deterministic check runs often, always fires, and
+treats <em>the collector being unreachable</em> as an alert in itself — which is
+the failure mode that has actually occurred here.</p>
+</div>
+
+<h3>The alert flow</h3>
+<pre><code>inject (15 min)  →  http request /bms/summary?hours=1
+                 →  Evaluate Conditions  (all thresholds live here)
+                 →  Format Email
+                 →  e-mail</code></pre>
+
+<p>Plus two manual injects: <strong>Test now</strong> to run a cycle immediately,
+and <strong>Clear alert state</strong> to forget what has already been notified
+after changing a threshold.</p>
+
+<h4>Conditions</h4>
+<table>
+<tr><th>Severity</th><th>Condition</th><th>Why</th></tr>
+<tr><td>CRITICAL</td><td>Collector unreachable, HTTP error, or no recent samples</td><td>Monitoring has stopped. You are blind.</td></tr>
+<tr><td>CRITICAL</td><td>Discharge disabled on a pack</td><td>Pack isolated, carries none of the load, sets no protection bit</td></tr>
+<tr><td>CRITICAL</td><td>Any protection or failure bit set</td><td>Something tripped</td></tr>
+<tr><td>CRITICAL</td><td>Cell above 3.65 V or below 2.50 V</td><td>Outside the safe window for LiFePO4</td></tr>
+<tr><td>CRITICAL</td><td>Charging below 0 °C</td><td>Lithium plating — permanent damage</td></tr>
+<tr><td>CRITICAL</td><td>Cell temperature above 55 °C</td><td>BMS should be limiting current</td></tr>
+<tr><td>CRITICAL</td><td>Fewer than four packs reporting for 30+ minutes</td><td>Grace period because single BLE drops are routine</td></tr>
+<tr><td>WARNING</td><td>Cell temperature above 45 °C</td><td>Ageing accelerates</td></tr>
+<tr><td>WARNING</td><td>Pack-to-pack temperature spread above 5 °C</td><td>Uneven current, resistance or airflow</td></tr>
+<tr><td>WARNING</td><td>Cell spread above its condition-dependent limit</td><td>See <a href="#thresholds">Thresholds</a></td></tr>
+<tr><td>WARNING</td><td>Current sharing more than 15% apart</td><td>Elevated resistance somewhere</td></tr>
+<tr><td>WARNING</td><td>Pack not accepting charge while others take &gt;10 A</td><td>Refusing charge when charge is available</td></tr>
+<tr><td>WARNING</td><td>Charge FET open continuously for 48 h</td><td>Possibly stuck believing it is full</td></tr>
+</table>
+
+<div class="box ok">
+<p><strong>A charge FET opening is not an alert on its own.</strong> Every healthy
+pack opens it on reaching full, and it appears in roughly a fifth of all logged
+samples. Only refusing charge <em>while charge is available</em>, or staying open
+for days, is flagged. Getting this wrong would mean an email every night the bank
+fills, and alert fatigue is the real failure mode.</p>
+</div>
+
+<h4>Notification behaviour</h4>
+<ul>
+<li>A new condition emails immediately.</li>
+<li>An unresolved CRITICAL re-notifies every 12 hours; a WARNING every 24.</li>
+<li>A condition that clears sends one all-clear.</li>
+<li>Subject leads with the worst active item, readable on a phone lock screen.</li>
+<li>Body includes current state for all four packs with FET status, plus links
+to the dashboard and these docs.</li>
+</ul>
+
+<div class="box warn">
+<p><strong>Dedupe state lives in Node-RED flow context</strong>, which does not
+survive a restart. After restarting Node-RED you may get one repeat notification
+for a still-active condition. That is the deliberate trade: a duplicate is better
+than a missed alert.</p>
+<p><strong>Thresholds are duplicated.</strong> They live in the Node-RED function
+node <em>and</em> in the collector's summary logic. If you change the collector's
+baselines, update the flow to match. This was a conscious choice — evaluation in
+Node-RED keeps the alerting readable and editable without touching the collector —
+but it is the one place the system can drift out of agreement with itself.</p>
+</div>
+
+<h3>Setting it up</h3>
+<ol>
+<li>Node-RED menu → Import → paste <code>bms-alerts-flow.json</code> → Import to
+<strong>new flow</strong>. Node IDs were chosen not to collide with the existing
+190 nodes.</li>
+<li>Open the e-mail node and enter the Gmail app password. Credentials are never
+exported, so this is the one manual step.</li>
+<li>Deploy, then press <strong>Test now</strong>. A healthy bank produces nothing,
+which is correct but uninformative.</li>
+<li>To prove the path end to end, temporarily change a threshold in the eval
+function (for example <code>&gt; 3.65</code> to <code>&gt; 3.40</code>), deploy,
+test, confirm the email arrives, then revert and press
+<strong>Clear alert state</strong>.</li>
+</ol>
+
+<h3>Notes on the daily AI report</h3>
+<p>Two prompt rules exist because of false positives it produced:</p>
+<ul>
+<li><strong>Cumulative counters.</strong> VE.Bus network error counts and similar
+only ever increase and reset on power cycle. A value of 2 is background noise.
+The report once inferred a failing RJ45 cable from it. These must be reported as
+context, never as an anomaly, unless large or demonstrably rising.</li>
+<li><strong>Historical alarm suppression.</strong> Alarms dated 2026-09-08 to
+2026-09-15 relating to the LiTime packs came from a BMS driver that was installed
+and removed. That rule matches on <em>timestamped</em> records only — it cannot
+cover an undated counter, and it must not suppress current BMS telemetry.</li>
+</ul>
+
+<!-- ================================================================= -->
+<h2 id="thresholds">Thresholds &amp; interpretation</h2>
+
+<h3>Cell spread</h3>
+<p>Limits depend on where the bank sits on the charge curve, because LiFePO4 is
+electrically flat through the middle of its range.</p>
+<table>
+<tr><th>Condition</th><th>Watch</th><th>Investigate</th></tr>
+<tr><td>Plateau, below 3.45 V/cell</td><td>30 mV</td><td>60 mV</td></tr>
+<tr><td>Top of charge, above 3.45 V/cell</td><td>50 mV</td><td>100 mV</td></tr>
+<tr><td>Under load, above 20 A</td><td>80 mV</td><td>120 mV</td></tr>
+</table>
+<p>Measured baseline on this bank: 14–21&nbsp;mV at rest, 35–50&nbsp;mV under
+load, worst ever recorded 50&nbsp;mV during a 155&nbsp;A discharge. Above roughly
+160&nbsp;mV a pack is conventionally considered imbalanced.</p>
+
+<h3>Temperature</h3>
+<ul>
+<li><strong>Below 0 °C while charging</strong> causes lithium plating —
+permanent damage and a genuine safety issue. The BMS should block it; this
+system is how you verify that it did.</li>
+<li><strong>Above 45 °C</strong> ageing accelerates. Above 55 °C the BMS should
+be limiting current.</li>
+<li><strong>Pack-to-pack deviation above 5 °C</strong> warrants investigation —
+identical packs sharing a compartment should track within a couple of
+degrees.</li>
+<li>MOSFET temperature normally runs a few degrees above cell temperature under
+load. A gap widening over months at the same current suggests degradation.</li>
+</ul>
+
+<h3>Current</h3>
+<ul>
+<li><strong>Deadband is ±2.07 A.</strong> Verified: across 3,179 samples the
+smallest non-zero magnitude was 2.072 A, with nothing whatsoever between 0 and
+that. A reading of 0.0 A means "under 2 A", never "disconnected".</li>
+<li>Healthy sharing is within about 3%. Measured baseline: 0.6 A spread across
+four packs at ±25 A, under 3%.</li>
+<li>Sustained deviation beyond 10% suggests elevated resistance in a cable,
+terminal or fuse.</li>
+</ul>
+
+<h3>Internal resistance</h3>
+<p>Fitted from <code>v_drop = offset + I × R</code> using only samples above
+10&nbsp;A. Expect 0.2–0.4&nbsp;mΩ per pack. The absolute value matters far less
+than movement over months. Low R² is expected — the calibration offset is
+noisier than the signal — and does not indicate a fault.</p>
+<p>This metric only accumulates when the bank is actually used. At the dock
+everything sits inside the deadband and no fit is possible.</p>
+
+<!-- ================================================================= -->
+<h2 id="quirks">Known quirks</h2>
+
+<h3>State of charge disagreement is normal</h3>
+<p>The four packs are hard-paralleled, so their true state of charge is
+identical by definition. Reported values have been observed at 99%, 96%, 87% and
+46% simultaneously. This is four independent coulomb counters drifting, not a
+fault. The cause is the 2.07 A deadband: at a dock, refrigeration draws roughly
+1.5 A per pack and goes entirely uncounted, accumulating error in one direction.</p>
+<p>All four counters have been observed resetting to 100% simultaneously when
+absorption reached the top. <strong>The SmartShunt is authoritative for bank
+state of charge.</strong></p>
+
+<h3>A pack reading 0.0 A at full charge</h3>
+<p>Normal end-of-charge behaviour. The pack that fills first opens its charge
+FET and stops accepting, while the others continue. Confirmed by cross-check:
+three packs summing to 100.18 A matched the SmartShunt's 98.4 A exactly, with
+the fourth contributing nothing.</p>
+<p>When a FET is open, <code>v_drop</code> <em>inverts</em> — terminals sit at
+bus voltage while the cells float free at their true resting voltage. That sign
+flip is a reliable indicator, and it is why resistance fitting excludes
+low-current samples.</p>
+
+<h3>Per-pack voltage offsets</h3>
+<p>Pack terminal voltages disagree by up to 150 mV between packs sampled in the
+same cycle, despite being hard-paralleled and therefore at an identical true
+voltage.</p>
+<p>The cell measurement chain is the accurate one. Three independent BMS have
+been observed reporting cell sums within 1 mV of each other <em>and</em> of the
+SmartShunt. The pack-voltage channel is where the error lives — plausibly
+because the BMS protects on cell voltages, so that path gets the calibration
+attention while pack voltage is largely a display number.</p>
+<p>Measured offsets, stable to about 6 mV each: Battery&nbsp;1 +99,
+Battery&nbsp;2 +37, Battery&nbsp;3 +53, Battery&nbsp;4 +49 mV. Applying them
+collapses the at-rest disagreement from 63 mV to 14 mV. Under load about 56 mV
+survives correction, which is real — different cable runs to the busbar.</p>
+<p><strong>Compare cell sums between packs, never terminal voltages.</strong>
+The dashboard shows the cell sum and its offset from the terminals on each pack
+card for exactly this reason; a negative offset means the cells are isolated
+behind an open FET.</p>
+
+<h3>Timezone</h3>
+<p>Venus OS runs on UTC by design and VRM applies your display timezone. The
+system clock is deliberately left alone; the collector and <code>bmsq</code> set
+<code>TZ</code> for their own processes only.</p>
+<div class="box warn">
+<p>Node-RED inherits the <em>system</em> timezone, so a cron entry of
+<code>00 06 * * *</code> fires at 06:00 <strong>UTC</strong> — 11 PM Pacific the
+previous evening. Check any scheduled flows.</p>
+</div>
+
+<h3>A pack can latch into an isolated state</h3>
+<p>Battery&nbsp;4 sat with both FETs open from 2026-09-13 to 2026-09-15: cells
+frozen at 3.432 V while its terminals tracked the bank, remaining capacity
+pinned at exactly 336.00 of 336.00 Ah, contributing nothing to a 100 A load.
+It reported <strong>no protection bit and no failure bit</strong>, and the app
+showed cells, balance and BMS all healthy.</p>
+<p>Toggling the app's discharge switch did not clear it. What did: disconnecting
+the pack from the bank, <strong>Power off</strong> in the app, a few minutes
+dark, then waking it with a charger. It has behaved normally since.</p>
+<p>The state was therefore held in volatile memory, not flash — which is why
+only a full controller shutdown cleared it. If this recurs, that is the
+procedure.</p>
+
+<h3>Serial numbers are not retrievable</h3>
+<p>The serial-number command returns twenty bytes of <code>0xFF</code> on all
+four packs. The app's serials come from the label or LiTime's cloud, not from
+the BMS. Pack identity therefore depends on the mapping table in
+<a href="#hardware">Hardware</a> — keep it accurate.</p>
+
+<!-- ================================================================= -->
+<h2 id="system">Wider system notes</h2>
+
+<h3>Why absorption is 13.9 V</h3>
+<p>The packs are rated for 14.4 ±0.2 V, so 13.9 V undercharges them
+deliberately. The reason is the Orion XS engine-detection logic.</p>
+<p>The Orions decide an engine is running by watching their input voltage, with
+delayed start at 14.00 V and shutdown at 13.50 V. The starter batteries are fed
+from the MultiPlus trickle output. Measured relationship:</p>
+<pre><code>V_starter ≈ V_house + (I × 0.004) − 0.245</code></pre>
+<p>The 245 mV is the trickle diode drop; the 4 mΩ is cable resistance between
+the MultiPlus terminals and the bank. Under heavy charge the cable drop exceeds
+the diode drop and the starter battery ends up <em>above</em> the house bank.
+At 14.2 V absorption the starter crosses 14.00 V and both Orions start,
+cycle, and flap — which is exactly what was observed.</p>
+<p>At 13.9 V the ranges do not overlap and the problem disappears. The
+consequences are that cells never reach the 3.50 V balancing threshold, and the
+SoC counters never get a full-charge reset.</p>
+
+<div class="box">
+<p><strong>Periodic remedy:</strong> raise absorption to 14.2 V for a couple of
+hours roughly once a quarter, while aboard and watching. This lets balancing run
+and recalibrates all four SoC counters. Expect the Orions to cycle during it.</p>
+<p><strong>Permanent fix:</strong> drive the Orions' remote on/off terminals
+from a real engine-running signal (alternator D+ or an oil pressure switch) and
+disable voltage-based detection. Voltage detection cannot work reliably here
+because a loaded alternator produces 13.5–13.6 V at the Orion input — below its
+own start threshold and only ~40 mV above its shutdown threshold.</p>
+</div>
+
+<h3>Do not install dbus-serialbattery</h3>
+<p>It works, and it reads these packs correctly. But it registers as a
+controlling BMS, which caused all three MPPTs to latch
+<code>Err 67 — No BMS</code> and stop charging whenever the BLE connection
+dropped. Clearing that flag requires connecting to each MPPT individually with
+VictronConnect; it cannot be reset from the Cerbo. Set Controlling BMS to
+<strong>No BMS control</strong> and Battery Monitor to the <strong>Apogee
+SmartShunt</strong>, both pinned explicitly rather than Automatic.</p>
+
+<!-- ================================================================= -->
+<h2 id="history">Project history</h2>
+
+<table>
+<tr><th>Finding</th><th>How it was established</th></tr>
+<tr><td>Frame length is self-describing (<code>byte[2] + 4</code>)</td><td>Verified across all captured frames; required because MTU 23 fragments a 105-byte frame into six pieces</td></tr>
+<tr><td>Current deadband is 2.07 A</td><td>3,179 samples: 1,911 at exactly zero, none between 0.5 and 2.0 A</td></tr>
+<tr><td>Bytes 62–63 are remaining capacity</td><td>remaining ÷ capacity reproduces reported SoC to within 1% on three packs; the fourth reads 114%, a genuine counter overrun</td></tr>
+<tr><td>Balancing threshold ≈ 3.50 V/cell</td><td>Observed 23:15–00:13 on 2026-09-11 with cells at 3.498–3.577 V</td></tr>
+<tr><td>Flag 0x80 = discharge disabled</td><td>Toggled the LiTime app switch with the collector stopped; flag read 0xC8 off, 0x48 on, changing both directions</td></tr>
+<tr><td>Flag 0x48 = not accepting charge</td><td>Appears on all four packs at the top of charge, including the moment SoC counters reset to 100%</td></tr>
+<tr><td>Balance memory bit 0x4</td><td>Latched 12 s before the first balancing sample and stayed set</td></tr>
+<tr><td>Venus has no persistent BlueZ storage</td><td><code>/var/lib/bluetooth/&lt;adapter&gt;/</code> does not exist; explains packs vanishing from the object tree</td></tr>
+<tr><td>Current sharing within 3%</td><td>Discharge −24.05 to −24.66 A, charge +21.88 to +22.44 A across four packs</td></tr>
+<tr><td>Cell chains accurate, terminal channels offset</td><td>Three packs' cell sums agreed within 1 mV and matched the SmartShunt, while their terminal readings spread 63 mV; applying per-pack offsets collapsed that to 14 mV</td></tr>
+<tr><td>Internal resistance 0.19–0.38 mΩ per pack</td><td>Regression of cell-sum-minus-terminal against current; stable across 5 A, 10 A and 20 A sample thresholds</td></tr>
+<tr><td>A pack can latch isolated with no fault reported</td><td>Battery 4, two days, cleared only by a full power-off</td></tr>
+<tr><td>D-Bus match rules must be released each poll</td><td>Collector died after exactly 15 hours with LimitsExceeded at 1024 rules</td></tr>
+</table>
+
+<footer>
+<p>Apogee BMS Monitor · <a href="/">dashboard</a> ·
+   <a href="/logs">collector log</a> ·
+   Venus OS v3.79 · BMS firmware 2.0.0 (2025-08-13)</p>
+<p>Protocol work builds on <code>calledit/LiTime_BMS_bluetooth</code> and
+   <code>mr-manuel/venus-os_dbus-serialbattery</code>.</p>
+</footer>
+</main>
+</div>
+</body>
+</html>

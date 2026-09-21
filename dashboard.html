@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apogee — Battery Bank</title>
+<style>
+  :root {
+    --bg:#f2f3f4; --card:#fff; --ink:#1f2429; --dim:#6b7580;
+    --line:#dfe3e7; --ok:#2e9e5b; --warn:#d98420; --bad:#cc3b30;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  header { background:var(--card); border-bottom:1px solid var(--line);
+           padding:14px 18px; display:flex; align-items:baseline; gap:14px;
+           flex-wrap:wrap; position:sticky; top:0; z-index:5; }
+  h1 { font-size:18px; margin:0; font-weight:600; }
+  .meta { color:var(--dim); font-size:12px; }
+  .wrap { padding:18px; max-width:1500px; margin:0 auto; }
+  .grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  .card h2 { font-size:13px; margin:0 0 10px; font-weight:600; color:var(--dim);
+             text-transform:uppercase; letter-spacing:.04em; }
+  .pack .name { font-weight:600; font-size:15px; display:flex;
+                justify-content:space-between; align-items:center; }
+  .big { font-size:26px; font-weight:600; margin:6px 0 2px; }
+  .sub { color:var(--dim); font-size:12px; }
+  .ident { color:var(--dim); font-size:10.5px; margin-top:3px;
+           font-family:ui-monospace,Menlo,Consolas,monospace;
+           word-break:break-all; line-height:1.4; }
+  table.kv { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; }
+  table.kv td { padding:3px 0; border-top:1px solid var(--line); }
+  table.kv td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:11px; font-weight:600; }
+  .p-ok { background:#e4f4ea; color:var(--ok); }
+  .p-warn { background:#fdf1e2; color:var(--warn); }
+  .p-bad { background:#fbe5e3; color:var(--bad); }
+  .p-idle { background:#eceff1; color:var(--dim); }
+  canvas { width:100%; height:200px; display:block; }
+  .legend { display:flex; gap:6px; flex-wrap:wrap; font-size:12px;
+            color:var(--dim); margin-top:10px; align-items:center; }
+  .legend .tog { cursor:pointer; user-select:none; padding:3px 9px;
+                 border:1px solid var(--line); border-radius:13px;
+                 background:var(--card); transition:opacity .12s; }
+  .legend .tog:hover { border-color:#c3cad1; }
+  .legend .tog.off { opacity:.38; text-decoration:line-through; }
+  .legend .static { padding:3px 0 3px 6px; }
+  .legend i { display:inline-block; width:11px; height:3px; border-radius:2px;
+              margin-right:6px; vertical-align:middle; }
+  .full { grid-column:1/-1; }
+  select, button, input[type=datetime-local] { font:inherit; padding:5px 9px; border:1px solid var(--line);
+                   border-radius:6px; background:var(--card); color:var(--ink); }
+  .banner { padding:10px 13px; border-radius:7px; margin-bottom:14px; font-weight:500; }
+  .b-ok { background:#e4f4ea; color:#1d6b3e; }
+  .b-bad { background:#fbe5e3; color:#94261d; }
+  .muted { color:var(--dim); font-size:12px; margin-top:6px; }
+  .note { font-size:12.5px; color:#4a535c; margin-top:12px; line-height:1.6;
+          border-top:1px solid var(--line); padding-top:10px; }
+  .note b { color:var(--ink); }
+  .note ul { margin:6px 0 0; padding-left:18px; }
+  .note li { margin:3px 0; }
+  .hint { font-size:11px; color:var(--dim); font-style:italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Apogee — Battery Bank</h1>
+  <span class="meta" id="meta">loading…</span>
+  <span style="flex:1"></span>
+  <select id="range">
+    <option value="1">1 hour</option>
+    <option value="6" selected>6 hours</option>
+    <option value="24">24 hours</option>
+    <option value="72">3 days</option>
+    <option value="168">7 days</option>
+    <option value="custom">Custom range…</option>
+  </select>
+  <span id="customRange" style="display:none;gap:6px;align-items:center">
+    <input type="datetime-local" id="fromAt">
+    <span style="color:var(--dim)">to</span>
+    <input type="datetime-local" id="toAt">
+    <button id="applyRange">Apply</button>
+  </span>
+  <button id="refresh">Refresh</button>
+</header>
+
+<div class="wrap">
+  <div id="banner"></div>
+  <div class="grid" id="packs"></div>
+  <div class="hint" style="margin-top:10px">Click a pack name in any legend to
+    hide or show it across every chart.</div>
+
+  <div class="grid" style="margin-top:10px">
+
+    <div class="card full">
+      <h2>Alarm &amp; status timeline</h2>
+      <canvas id="c_states" style="height:150px"></canvas>
+      <div class="legend" id="l_states"></div>
+      <div id="events"></div>
+      <div class="note">
+        Built from every stored sample rather than the downsampled chart data,
+        so a brief alarm cannot slip between points.
+        <ul>
+          <li><b>Red</b> — a protection or failure bit was set. Investigate
+            immediately; the event table below gives the raw flag values.</li>
+          <li><b>Blue</b> — passive balancing active. Normal and desirable near
+            the top of charge above 3.50&nbsp;V per cell. Balancing during
+            <em>discharge</em> or at low state of charge would be abnormal.</li>
+          <li><b>Grey</b> — the pack stopped reporting. This is a Bluetooth or
+            collector problem, not a battery fault. Brief gaps are routine;
+            a pack grey for hours needs attention, because you are blind to it
+            rather than because it has failed.</li>
+          <li><b>Red</b> — discharge is disabled on that pack, so it is
+            electrically isolated and carries none of the load while the others
+            take its share. This is set by the discharge switch in the LiTime
+            app and persists until switched back on. The BMS reports no
+            protection or failure bit for it and the cells look perfectly
+            healthy, which is exactly why it needs its own indicator.
+            A pack that is merely <em>full</em> and has stopped accepting
+            charge is not flagged here — that is normal.</li>
+          <li>Grey on <em>all four</em> packs at once points at the collector
+            service or the GX Bluetooth adapter, not the batteries.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>Cell spread (max &minus; min), mV</h2>
+      <canvas id="c_delta"></canvas>
+      <div class="legend" id="l_delta"></div>
+      <div class="note">
+        Spread is the single best indicator of pack health, but it means
+        different things at different points on the charge curve, so the shaded
+        bands move with the bank's condition.
+        <ul>
+          <li><b>Plateau</b> (below 3.45&nbsp;V/cell): limits 30 and 60&nbsp;mV.
+            LiFePO4 is electrically flat here, so imbalance is compressed and
+            hard to see. A large spread on the plateau is more concerning than
+            the same number at the top of charge.</li>
+          <li><b>Top of charge</b> (above 3.45&nbsp;V/cell): limits 50 and
+            100&nbsp;mV. This is where imbalance actually reveals itself, and
+            the most meaningful place to compare packs.</li>
+          <li><b>Under load</b> (above 20&nbsp;A): limits 80 and 120&nbsp;mV.
+            Differences in cell internal resistance dominate, so the reading
+            says more about resistance than about capacity balance.</li>
+          <li>A single excursion means little. <b>A pack trending upward at the
+            same operating point over weeks</b> is the real signal, and usually
+            indicates one cell losing capacity relative to its siblings.</li>
+          <li>Above roughly 160&nbsp;mV a pack is conventionally considered
+            imbalanced and would benefit from a long absorption hold to let
+            passive balancing work.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>Current per pack, A</h2>
+      <canvas id="c_current"></canvas>
+      <div class="legend" id="l_current"></div>
+      <div class="note">
+        Positive is charging, negative is discharging. Four identical packs in
+        parallel should share current almost equally.
+        <ul>
+          <li><b>Deadband:</b> the BMS cannot resolve below about
+            &plusmn;2.07&nbsp;A. A reading of exactly 0.0&nbsp;A means "under
+            2&nbsp;A", <b>never</b> "disconnected". Ignore this chart entirely
+            at low bank currents.</li>
+          <li><b>Healthy sharing</b> is within roughly 3% of each other under
+            meaningful load. Sustained deviation beyond 10% suggests a cable,
+            terminal or fuse with elevated resistance on the odd pack &mdash;
+            check torque and look for heat at the connections.</li>
+          <li><b>One pack at zero while others carry load</b> means its FET is
+            open. At the top of charge this is normal: a full pack stops
+            accepting. During bulk charge or discharge it is not, and it forces
+            the remaining packs to carry proportionally more. Check the FET
+            state row on the pack card to tell the two apart.</li>
+          <li><b>Capacity check:</b> each pack is rated 200&nbsp;A continuous,
+            so the bank can carry 800&nbsp;A with all four online. With only two
+            online a 236&nbsp;A load puts 118&nbsp;A through each &mdash; still
+            within rating. You do not exceed a pack's limit until three are
+            offline.</li>
+          <li>Compare the sum of all four against the SmartShunt. A persistent
+            shortfall means a pack is contributing without reporting, or has
+            dropped out.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>FET state</h2>
+      <canvas id="c_fets" style="height:190px"></canvas>
+      <div class="legend" id="l_fets"></div>
+      <div class="note">
+        Two tracks per pack, drawn from the flag word the BMS reports.
+        Green means the FET is conducting normally; a coloured bar means it is
+        open; pale grey means no sample was collected.
+        <ul>
+          <li><b>Charge (amber)</b> — the pack considers itself full and has
+            stopped accepting. <b>Normal</b>, and every healthy pack does it at
+            the top of charge. What is not normal is a pack showing this
+            continuously for days while the others cycle: that pack believes it
+            is permanently full and will never take a charge.</li>
+          <li><b>Discharge (red)</b> — the pack is isolated and carries none of
+            the load. Set by the discharge switch in the LiTime app and
+            persistent until switched back. <b>Always investigate.</b></li>
+          <li><b>Compare against the current chart.</b> A pack showing neither
+            bar but still reading 0.0&nbsp;A under real load is the awkward
+            case: its FETs report closed yet it is not participating, which
+            points at something other than FET state.</li>
+          <li>The BMS sets <em>no protection or failure bit</em> for either
+            condition, so this chart is the only place these appear.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>Pack terminal voltage, V</h2>
+      <canvas id="c_volt"></canvas>
+      <div class="legend" id="l_volt"></div>
+      <div class="note">
+        Voltage measured at each pack's own terminals. Because the packs are
+        hard-paralleled, the true voltage at the busbar is <em>identical</em> for
+        all four at any instant — so the spread you see here is measurement
+        artifact, not a real electrical difference.
+        <ul>
+          <li><b>Expect 50–150&nbsp;mV of apparent spread.</b> Two causes: each
+            BMS has its own ADC calibration, and the packs are sampled up to two
+            minutes apart, so during active charging the bank has genuinely
+            moved between readings. Neither indicates a problem.</li>
+          <li><b>Do not use pack-to-pack differences here to infer anything.</b>
+            For imbalance, use the cell spread chart; for participation, use the
+            current chart.</li>
+          <li><b>What is useful is the shape.</b> All four should rise and fall
+            together. A pack whose line diverges in <em>trend</em> — flattening
+            while others climb, or vice versa — has stopped following the bus,
+            which means its FET has opened.</li>
+          <li><b>Reference points:</b> 13.6&nbsp;V float, 13.9&nbsp;V absorption
+            as configured on this vessel, 14.4&nbsp;V the manufacturer's rating.
+            Resting near 13.3–13.5&nbsp;V means a full, settled bank; under
+            13.0&nbsp;V at rest means genuinely low.</li>
+          <li>Compare against the SmartShunt rather than between packs. A pack
+            reading persistently more than ~200&nbsp;mV from the shunt at rest
+            has a calibration issue worth noting, though it affects nothing
+            operationally.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>State of charge, %</h2>
+      <canvas id="c_soc"></canvas>
+      <div class="legend" id="l_soc"></div>
+      <div class="note">
+        Each pack reports its own state of charge, counted internally from
+        current in and out. <b>The packs disagreeing with each other is normal
+        and expected</b>, not a fault &mdash; they are hard-paralleled, so their
+        true state of charge is identical by definition. What you are seeing is
+        four independent counters drifting apart.
+        <ul>
+          <li><b>Why they drift:</b> the BMS cannot measure below about
+            2.07&nbsp;A, so at a dock the fridge and freezer cycling draw
+            roughly 1.5&nbsp;A per pack and go completely uncounted. The error
+            accumulates in one direction, day after day.</li>
+          <li><b>The SmartShunt is authoritative</b> for bank state of charge.
+            These figures are diagnostic, never a basis for deciding how much
+            capacity is left.</li>
+          <li><b>Counters reset at full charge.</b> All four have been observed
+            snapping back to 100% simultaneously once absorption reaches the
+            top. A pack that <em>fails</em> to reset while the others do is the
+            interesting case, and suggests it is not reaching full.</li>
+          <li><b>SoC drift</b> on the pack cards is a different measure: it
+            compares the reported figure against the BMS's own remaining ÷
+            capacity arithmetic. Under 1% is normal. Values above 10% mean that
+            pack's counter has overrun and badly needs a full charge.</li>
+          <li>Charging to 14.2&nbsp;V roughly once a quarter recalibrates every
+            counter at once and lets balancing run. At the 13.9&nbsp;V setting
+            used here, neither happens.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>Cell voltage range, V</h2>
+      <canvas id="c_cells"></canvas>
+      <div class="legend" id="l_cells"></div>
+      <div class="note">
+        Two lines per pack: its highest and lowest cell. The gap between them
+        is the spread charted above.
+        <ul>
+          <li><b>3.65&nbsp;V</b> is the practical ceiling for LiFePO4. Cells
+            held above this age quickly, and the BMS will trip overvoltage
+            protection somewhere near 3.75&nbsp;V.</li>
+          <li><b>2.50&nbsp;V</b> is the floor. Below this you are removing
+            capacity permanently. In normal use you should never approach it;
+            3.00&nbsp;V under load already means the bank is nearly empty.</li>
+          <li><b>3.50&nbsp;V</b> is where passive balancing engages. At
+            13.9&nbsp;V absorption the cells top out near 3.475&nbsp;V and
+            never balance, which is a deliberate trade on this vessel.</li>
+          <li><b>Watch for one pack's maximum running away</b> from the others
+            as charging finishes. That pack will hit protection first and drop
+            out, which is the usual first symptom of a weakening cell.</li>
+          <li>The flat plateau between roughly 3.20 and 3.40&nbsp;V covers most
+            of the usable capacity, which is why resting voltage is a poor
+            proxy for state of charge.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>Temperature, °C</h2>
+      <canvas id="c_temp"></canvas>
+      <div class="legend" id="l_temp"></div>
+      <div class="note">
+        Solid lines are cell temperature. The packs sit in the same compartment,
+        so they should track closely.
+        <ul>
+          <li><b>Charging below 0&nbsp;°C causes lithium plating</b>, which is
+            permanent and a genuine safety issue. The BMS should block it, but
+            this chart is how you verify that it did. Discharging at sub-zero
+            temperatures is comparatively harmless.</li>
+          <li><b>Above 45&nbsp;°C</b> ageing accelerates markedly. Above
+            55&nbsp;°C the BMS should be reducing or stopping current, and
+            sustained operation there shortens pack life considerably.</li>
+          <li><b>Pack-to-pack deviation above 5&nbsp;°C</b> is the number to
+            watch. Identical packs sharing a compartment and current should be
+            within a couple of degrees. A consistently hotter pack is either
+            carrying more current, has higher internal resistance, or has
+            restricted airflow &mdash; all worth investigating.</li>
+          <li><b>MOSFET temperature</b> normally runs a few degrees above cell
+            temperature under load and converges when idle. A gap that widens
+            over months at the same current suggests the FETs or an internal
+            connection are degrading.</li>
+          <li>Temperature rising while current is near zero is abnormal and
+            warrants prompt physical inspection.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:14px">
+    <div class="card">
+      <h2>Poll reliability (24 h)</h2>
+      <table class="kv" id="rel"></table>
+      <div class="note">
+        Occasional Bluetooth aborts are normal in a compartment full of
+        competing 2.4&nbsp;GHz devices. Above 90% is healthy. A single pack far
+        below its siblings usually means signal or contention rather than a
+        battery problem; all four falling together points at the collector or
+        the adapter.
+      </div>
+    </div>
+    <div class="card">
+      <h2>Internal resistance</h2>
+      <table class="kv" id="ir"></table>
+      <div class="note">
+        Derived, not measured directly: the difference between the sum of the
+        cell voltages and the terminal voltage is fitted against current, and
+        the slope is the resistance of the FETs, shunt, busbars and welds
+        between them.
+        <ul>
+          <li><b>0.2&ndash;0.4&nbsp;mΩ</b> is normal for a healthy 320&nbsp;Ah
+            pack. The absolute figure matters far less than how it moves.</li>
+          <li><b>A pack rising relative to its siblings over months</b> is the
+            signal &mdash; loosening terminals, fatiguing welds, or ageing
+            FETs. This is the earliest warning you are likely to get.</li>
+          <li><b>Only samples above 10&nbsp;A count.</b> Below that the BMS
+            cannot resolve current, and a pack with an open FET reports zero
+            while its cells float free &mdash; both would corrupt the fit.</li>
+          <li><b>Low R² is expected</b>, not a fault. The calibration offset
+            between the two measurement chains is noisier than the signal, so
+            the figure only becomes meaningful over hundreds of samples.</li>
+          <li>It only accumulates on days the bank is actually used. At the
+            dock nothing here will change.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Capacity &amp; wear</h2>
+      <table class="kv" id="wear"></table>
+      <div class="note">
+        Learned capacity is each BMS's own estimate, refined as it observes full
+        charge and discharge cycles. Absolute values matter less than
+        <b>divergence over months</b> &mdash; a pack steadily losing capacity
+        relative to its siblings is ageing faster. Cycle counts that drift apart
+        mean the packs are doing unequal work, which is worth understanding even
+        when nothing is faulty.
+      </div>
+    </div>
+  </div>
+  <footer style="margin-top:26px;padding-top:16px;border-top:1px solid var(--line);
+                 color:var(--dim);font-size:13px;display:flex;gap:18px;flex-wrap:wrap">
+    <a href="/docs" style="color:#2f6fd0;font-weight:600">Documentation</a>
+    <a href="/logs" style="color:#2f6fd0;font-weight:600">Collector log</a>
+    <span>Theory of operation, BLE protocol reference, administration commands,
+      troubleshooting and interpretation thresholds. The log shows the last few
+      hundred poll cycles — useful for checking Bluetooth reliability without
+      an SSH session.</span>
+  </footer>
+</div>
+
+<script>
+const COLORS = ['#2f6fd0','#d98420','#2e9e5b','#8b52c9'];
+const $ = s => document.querySelector(s);
+const hidden = new Set();   // pack labels hidden across all charts
+let LAST = null;            // last fetched payload, so toggles need no refetch
+
+function fmt(v, d) { return v === null || v === undefined ? '–' : Number(v).toFixed(d); }
+function colorFor(label, labels) { return COLORS[labels.indexOf(label) % COLORS.length]; }
+
+// ---- legend with click-to-toggle ---------------------------------------
+function legend(el, labels, extra) {
+  el.innerHTML = labels.map(l =>
+    `<span class="tog${hidden.has(l) ? ' off' : ''}" data-label="${l}">
+       <i style="background:${colorFor(l, labels)}"></i>${l}</span>`).join('') +
+    (extra || '');
+  el.querySelectorAll('.tog').forEach(node => {
+    node.onclick = () => {
+      const l = node.dataset.label;
+      hidden.has(l) ? hidden.delete(l) : hidden.add(l);
+      redraw();
+    };
+  });
+}
+
+// ---- shared time axis ---------------------------------------------------
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function hhmm(d) {
+  return d.getHours().toString().padStart(2,'0') + ':' +
+         d.getMinutes().toString().padStart(2,'0');
+}
+
+// Local midnights strictly inside the window, so a multi-day view shows where
+// one day ends and the next begins.
+function midnights(t0, t1) {
+  const out = [];
+  const d = new Date(t0 * 1000);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 1);
+  while (d.getTime() / 1000 < t1 && out.length < 40) {
+    out.push(d.getTime() / 1000);
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+function drawTimeAxis(g, X, t0, t1, w, h, padL, padR, padT) {
+  const spanH = (t1 - t0) / 3600;
+  const days = midnights(t0, t1);
+
+  // Day boundaries: a full-height rule plus the date, drawn before the data.
+  g.save();
+  g.strokeStyle = '#b9c2ca'; g.lineWidth = 1; g.setLineDash([2, 3]);
+  g.fillStyle = '#7d868f'; g.font = '10px sans-serif'; g.textAlign = 'left';
+  days.forEach(t => {
+    const x = Math.round(X(t)) + 0.5;
+    if (x < padL || x > w - padR) return;
+    g.beginPath(); g.moveTo(x, padT); g.lineTo(x, h - 20); g.stroke();
+    const d = new Date(t * 1000);
+    g.fillText(MONTHS[d.getMonth()] + ' ' + d.getDate(), x + 3, padT + 9);
+  });
+  g.restore();
+
+  // Time labels. Include the date once the window spans more than a day,
+  // otherwise the reader cannot tell which 06:23 they are looking at.
+  g.fillStyle = '#8a939c'; g.font = '11px sans-serif'; g.textAlign = 'center';
+  g.textBaseline = 'alphabetic';
+  const n = spanH > 48 ? 4 : 3;
+  for (let i = 0; i <= n; i++) {
+    const t = t0 + (t1 - t0) * i / n, d = new Date(t * 1000);
+    const lbl = spanH > 24 ? (MONTHS[d.getMonth()] + ' ' + d.getDate() + ' ' + hhmm(d))
+                           : hhmm(d);
+    let x = X(t);
+    x = Math.min(Math.max(x, padL + 26), w - padR - 26);
+    g.fillText(lbl, x, h - 6);
+  }
+}
+
+// ---- minimal canvas line chart, no dependencies -------------------------
+function chart(canvas, ts, series, opts) {
+  opts = opts || {};
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  const padL = 46, padR = 10, padT = 10, padB = 22;
+  const all = series.flatMap(s => s.data).filter(v => v !== null && !isNaN(v));
+  if (!all.length || !ts.length) {
+    g.fillStyle = '#6b7580'; g.font = '13px sans-serif';
+    g.fillText(series.length ? 'no data in this window'
+                             : 'all series hidden — click a legend item', padL, h / 2);
+    return;
+  }
+  let lo = Math.min(...all), hi = Math.max(...all);
+  if (opts.zero) lo = Math.min(lo, 0);
+  if (opts.thresholds) {
+    hi = Math.max(hi, Math.max(...opts.thresholds.alarm) * 1.05);
+    lo = Math.min(lo, 0);
+  }
+  if (hi - lo < (opts.minSpan || 0.001)) { const m = (opts.minSpan || 1) / 2; lo -= m; hi += m; }
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+
+  const t0 = ts[0], t1 = ts[ts.length - 1] || t0 + 1;
+  const X = t => padL + (t - t0) / Math.max(1, t1 - t0) * (w - padL - padR);
+  const Y = v => padT + (1 - (v - lo) / (hi - lo)) * (h - padT - padB);
+
+  if (opts.thresholds) {
+    const T = opts.thresholds;
+    const band = (lowArr, highArr, fill) => {
+      g.fillStyle = fill; g.beginPath();
+      T.ts.forEach((t, i) => {
+        const x = X(t), y = Y(typeof lowArr === 'number' ? lowArr : lowArr[i]);
+        if (i === 0) g.moveTo(x, y);
+        else { g.lineTo(x, Y(typeof lowArr === 'number' ? lowArr : lowArr[i-1])); g.lineTo(x, y); }
+      });
+      for (let i = T.ts.length - 1; i >= 0; i--) {
+        const x = X(T.ts[i]), y = Y(typeof highArr === 'number' ? highArr : highArr[i]);
+        if (i === T.ts.length - 1) g.lineTo(x, y);
+        else { g.lineTo(x, Y(typeof highArr === 'number' ? highArr : highArr[i+1])); g.lineTo(x, y); }
+      }
+      g.closePath(); g.fill();
+    };
+    band(0, T.warn, 'rgba(46,158,91,.10)');
+    band(T.warn, T.alarm, 'rgba(217,132,32,.13)');
+    band(T.alarm, hi, 'rgba(204,59,48,.13)');
+    const stepLine = (arr, color) => {
+      g.strokeStyle = color; g.lineWidth = 1.2; g.setLineDash([5, 4]); g.beginPath();
+      T.ts.forEach((t, i) => {
+        const x = X(t), y = Y(arr[i]);
+        if (i === 0) g.moveTo(x, y);
+        else { g.lineTo(x, Y(arr[i-1])); g.lineTo(x, y); }
+      });
+      g.stroke(); g.setLineDash([]);
+    };
+    stepLine(T.warn, 'rgba(217,132,32,.75)');
+    stepLine(T.alarm, 'rgba(204,59,48,.75)');
+  }
+
+  g.strokeStyle = '#e8ebee'; g.fillStyle = '#8a939c';
+  g.font = '11px sans-serif'; g.textAlign = 'right'; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + (hi - lo) * i / 4, y = Math.round(Y(v)) + 0.5;
+    g.beginPath(); g.moveTo(padL, y); g.lineTo(w - padR, y); g.stroke();
+    g.fillText(v.toFixed(opts.dec === undefined ? 1 : opts.dec), padL - 6, y + 3.5);
+  }
+  drawTimeAxis(g, X, t0, t1, w, h, padL, padR, padT);
+  series.forEach(s => {
+    g.strokeStyle = s.color; g.lineWidth = s.thin ? 1.1 : 1.7;
+    if (s.dash) g.setLineDash([3,3]);
+    g.beginPath(); let started = false;
+    s.data.forEach((v, i) => {
+      if (v === null || v === undefined || isNaN(v)) { started = false; return; }
+      const x = X(s.ts ? s.ts[i] : ts[i]), y = Y(v);
+      if (!started) { g.moveTo(x, y); started = true; } else { g.lineTo(x, y); }
+    });
+    g.stroke(); g.setLineDash([]);
+  });
+}
+
+// ---- spread thresholds --------------------------------------------------
+function spreadLimits(cellMaxV, absCurrent) {
+  if (absCurrent > 20) return [80, 120];
+  if (cellMaxV >= 3.45) return [50, 100];
+  return [30, 60];
+}
+
+function computeThresholds(hist) {
+  const labels = Object.keys(hist.packs);
+  if (!labels.length) return null;
+  const base = hist.packs[labels[0]].ts;
+  const warn = [], alarm = [];
+  base.forEach(t => {
+    let vmax = 0, imax = 0;
+    labels.forEach(l => {
+      const p = hist.packs[l];
+      let best = 0, bd = Infinity;
+      for (let j = 0; j < p.ts.length; j++) {
+        const d = Math.abs(p.ts[j] - t);
+        if (d < bd) { bd = d; best = j; }
+      }
+      if (bd < 600) {
+        vmax = Math.max(vmax, p.cell_max[best] || 0);
+        imax = Math.max(imax, Math.abs(p.current[best] || 0));
+      }
+    });
+    const [wv, av] = spreadLimits(vmax, imax);
+    warn.push(wv); alarm.push(av);
+  });
+  return { ts: base, warn, alarm };
+}
+
+// ---- status timeline ----------------------------------------------------
+const STATE_FILL = { clear:'#cfe3d6', balancing:'#2f6fd0', alarm:'#cc3b30',
+                     discharge_off:'#cc3b30', nodata:'#c9ced3' };
+
+function drawFets(hist) {
+  const canvas = $('#c_fets');
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  const allLabels = Object.keys(hist.packs).sort();
+  const labels = allLabels.filter(l => !hidden.has(l));
+  if (!labels.length) {
+    g.fillStyle = '#6b7580'; g.font = '13px sans-serif';
+    g.fillText(allLabels.length ? 'all packs hidden' : 'no data', 110, h / 2);
+    legend($('#l_fets'), allLabels, FET_KEY);
+    return;
+  }
+  const padL = 110, padR = 10, padT = 6, padB = 22;
+  const rows = labels.length * 2;
+  const rowH = Math.max(7, (h - padT - padB) / rows - 4);
+  let t0 = Infinity, t1 = -Infinity;
+  labels.forEach(l => {
+    const ts = hist.packs[l].ts;
+    if (ts.length) { t0 = Math.min(t0, ts[0]); t1 = Math.max(t1, ts[ts.length - 1]); }
+  });
+  if (!isFinite(t0)) { t0 = 0; t1 = 1; }
+  const X = t => padL + (t - t0) / Math.max(1, t1 - t0) * (w - padL - padR);
+
+  g.font = '11px sans-serif';
+  let row = 0;
+  labels.forEach(l => {
+    [['charge_blocked', 'charge', '#d98420'],
+     ['discharge_disabled', 'discharge', '#cc3b30']].forEach(([field, name, colour]) => {
+      const y = padT + row * (rowH + 4);
+      row++;
+      g.fillStyle = '#1f2429'; g.textAlign = 'right'; g.textBaseline = 'middle';
+      g.fillText(l + ' \u00b7 ' + name, padL - 8, y + rowH / 2);
+      // Empty background means no data. Conducting is drawn green so a
+      // healthy FET is visibly healthy rather than merely blank.
+      g.fillStyle = '#f0f2f3'; g.fillRect(padL, y, w - padL - padR, rowH);
+      const p = hist.packs[l], arr = p[field] || [];
+      for (let i = 0; i < arr.length; i++) {
+        const x0 = X(p.ts[i]);
+        const x1 = i + 1 < arr.length ? X(p.ts[i + 1]) : X(t1);
+        g.fillStyle = arr[i] ? colour : '#a8d5bb';
+        g.fillRect(x0, y, Math.max(x1 - x0, 1.5), rowH);
+      }
+      g.strokeStyle = '#e3e7ea'; g.lineWidth = 1;
+      g.strokeRect(padL + .5, y + .5, w - padL - padR - 1, rowH - 1);
+    });
+  });
+
+  drawTimeAxis(g, X, t0, t1, w, h, padL, padR, padT);
+  legend($('#l_fets'), allLabels, FET_KEY);
+}
+
+const FET_KEY =
+  '<span class="static"><i style="background:#a8d5bb"></i>conducting</span>' +
+  '<span class="static"><i style="background:#d98420"></i>charge FET open (full)</span>' +
+  '<span class="static"><i style="background:#cc3b30"></i>discharge disabled</span>' +
+  '<span class="static"><i style="background:#f0f2f3"></i>no data</span>';
+
+function drawStates(st) {
+  const canvas = $('#c_states');
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  const allLabels = Object.keys(st.packs || {}).sort();
+  const labels = allLabels.filter(l => !hidden.has(l));
+  if (!labels.length) {
+    g.fillStyle = '#6b7580'; g.font = '13px sans-serif';
+    g.fillText(allLabels.length ? 'all packs hidden' : 'no data in this window', 90, h/2);
+  } else {
+    const padL = 86, padR = 10, padT = 6, padB = 22;
+    const rowH = Math.max(14, (h - padT - padB) / labels.length - 6);
+    const X = t => padL + (t - st.t0) / Math.max(1, st.t1 - st.t0) * (w - padL - padR);
+    g.font = '12px sans-serif';
+    labels.forEach((l, i) => {
+      const y = padT + i * (rowH + 6);
+      g.fillStyle = '#1f2429'; g.textAlign = 'right'; g.textBaseline = 'middle';
+      g.fillText(l, padL - 8, y + rowH / 2);
+      g.fillStyle = '#f4f6f7'; g.fillRect(padL, y, w - padL - padR, rowH);
+      st.packs[l].forEach(seg => {
+        const x0 = X(seg.t0), x1 = Math.max(X(seg.t1), X(seg.t0) + 1.5);
+        g.fillStyle = STATE_FILL[seg.kind] || '#ddd';
+        g.fillRect(x0, y, x1 - x0, rowH);
+      });
+      g.strokeStyle = '#e3e7ea'; g.lineWidth = 1;
+      g.strokeRect(padL + .5, y + .5, w - padL - padR - 1, rowH - 1);
+    });
+      drawTimeAxis(g, X, st.t0, st.t1, w, h, padL, padR, padT);
+  }
+  legend($('#l_states'), allLabels,
+    '<span class="static"><i style="background:#cfe3d6"></i>clear</span>' +
+    '<span class="static"><i style="background:#2f6fd0"></i>balancing</span>' +
+    '<span class="static"><i style="background:#cc3b30"></i>alarm</span>' +
+    '<span class="static"><i style="background:#cc3b30"></i>discharge disabled</span>' +
+    '<span class="static"><i style="background:#c9ced3"></i>no data</span>');
+}
+
+function renderEvents(st) {
+  const el = $('#events');
+  if (!st.events || !st.events.length) {
+    el.innerHTML = '<div class="muted">No alarm or balancing activity in this window.</div>';
+    return;
+  }
+  const rows = st.events.slice(0, 12).map(e => {
+    const t = new Date(e.ts * 1000).toLocaleString();
+    const what = (e.protection_raw || e.failure_raw)
+      ? '<span class="pill p-bad">alarm</span> ' +
+        (e.protections !== '[]' ? e.protections : '') +
+        ' prot=0x' + (e.protection_raw >>> 0).toString(16) +
+        ' fail=0x' + (e.failure_raw >>> 0).toString(16)
+      : '<span class="pill p-ok">balancing</span> cells ' + e.balancing;
+    return '<tr><td>' + t + '</td><td>' + e.label + '</td><td>' + what + '</td></tr>';
+  }).join('');
+  el.innerHTML = '<table class="kv" style="margin-top:12px">' + rows + '</table>' +
+    (st.event_count > 12 ? '<div class="muted">' + st.event_count +
+     ' events total, showing 12</div>' : '');
+}
+
+// ---- rendering ----------------------------------------------------------
+function stateClass(s) {
+  if (s === 'charging') return 'p-ok';
+  if (s === 'discharging') return 'p-warn';
+  return 'p-idle';
+}
+
+// Cell sum minus terminal voltage. Normally a small positive number - the
+// drop across the BMS internal path. A NEGATIVE value means the terminals are
+// being held above the cells by the busbar while the cells sit isolated, which
+// is the signature of an open FET, so it is highlighted.
+function vDrop(p) {
+  if (p.cells_sum == null || p.voltage == null) return '';
+  const mv = Math.round((p.cells_sum - p.voltage) * 1000);
+  const sign = mv > 0 ? '+' : '';
+  const colour = mv < 0 ? 'var(--bad)' : 'var(--dim)';
+  const weight = mv < 0 ? '600' : '400';
+  return `<span style="color:${colour};font-weight:${weight}">(${sign}${mv} mV)</span>`;
+}
+
+function identLine(info, mac) {
+  const b = (info && info.packs && info.packs[mac]) || {};
+  const bits = [];
+  if (b.serial) bits.push(b.serial);
+  if (b.ble_name) bits.push(b.ble_name);
+  bits.push(mac);
+  if (b.note) bits.push(b.note);
+  return bits.join(' &middot; ');
+}
+
+function resText(res, label) {
+  const b = res && res.packs && res.packs[label];
+  if (!b) return '–';
+  if (b.status !== 'ok')
+    return `<span class="hint">needs load data (${b.samples})</span>`;
+  return `${b.resistance_mohm.toFixed(2)} mΩ ` +
+         `<span class="hint">n=${b.samples}</span>`;
+}
+
+function renderPacks(latest, res, info, summary) {
+  const el = $('#packs'); el.innerHTML = '';
+  latest.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+  latest.forEach(p => {
+    // On a historical window, "age" against the wall clock is meaningless and
+    // every pack would look stale. Only judge freshness on a live window.
+    // Always evaluated against now: /bms/latest returns the newest sample per
+    // pack regardless of the chart window, so age and staleness are real.
+    const age = Math.round(Date.now() / 1000 - p.ts);
+    const stale = age > 900;
+    const cells = JSON.parse(p.cells || '[]');
+    const alarm = p.protection_raw !== 0 || p.failure_raw !== 0;
+    const disOff = !!p.discharge_disabled;
+    const chgOff = !!p.charge_blocked;
+    const badge = stale ? '<span class="pill p-bad">STALE</span>'
+                : alarm ? '<span class="pill p-bad">ALARM</span>'
+                : disOff ? '<span class="pill p-bad">DISCHARGE OFF</span>'
+                : `<span class="pill ${stateClass(p.state)}">${p.state}</span>`;
+    el.insertAdjacentHTML('beforeend', `
+      <div class="card pack">
+        <div class="name">${p.label} ${badge}</div>
+        <div class="big">${fmt(p.voltage,3)} V <span style="font-size:16px;color:var(--dim)">
+          ${p.current>0?'+':''}${fmt(p.current,1)} A</span></div>
+        <div class="sub">${fmt(p.soc,0)}% &middot; ${fmt(p.remaining_ah,1)} of
+          ${fmt(p.capacity,1)} Ah &middot; ${age}s ago</div>
+        <div class="ident">${identLine(info, p.mac)}</div>
+        <table class="kv">
+          <tr><td>Cells</td><td>${cells.map(c=>c.toFixed(3)).join(' / ')}
+            <span class="hint">[${fmt(p.cells_sum,3)} V]</span>
+            ${vDrop(p)}</td></tr>
+          <tr><td>Spread</td><td>${p.cell_delta_mv} mV</td></tr>
+          <tr><td>Temp cell / FET</td><td>${p.temp_cell} / ${p.temp_mosfet} °C</td></tr>
+          <tr><td>SoC drift</td><td>${fmt(p.soc_drift,2)} %</td></tr>
+          <tr><td>Cycles / SoH</td><td>${p.cycles} / ${p.soh}%</td></tr>
+          <tr><td>Internal resistance</td><td>${resText(res, p.label)}</td></tr>
+          <tr><td>Balancing</td><td>${p.balancing === '[]' ? 'no' : p.balancing}</td></tr>
+          <tr><td>Discharge FET</td><td>${disOff
+            ? `<span style="color:var(--bad);font-weight:600">DISABLED</span>`
+            : 'enabled'}</td></tr>
+          <tr><td>Charge FET</td><td>${chgOff
+            ? 'open <span class="hint">(full, not accepting)</span>'
+            : 'accepting'}</td></tr>
+        </table>
+      </div>`);
+  });
+}
+
+function renderBanner(s) {
+  const b = $('#banner');
+  const issues = [];
+  if (s.status !== 'ok') issues.push(s.note || 'collector reporting no data');
+  if (s.packs_reporting < s.packs_expected)
+    issues.push(`only ${s.packs_reporting} of ${s.packs_expected} packs reporting`);
+  if (s.window_is_live !== false && (s.packs_stale_over_15min || []).length)
+    issues.push('stale: ' + s.packs_stale_over_15min.join(', '));
+  if (s.any_alarm_flag_set) issues.push('a BMS alarm flag is set');
+  if ((s.packs_with_discharge_disabled || []).length)
+    issues.push('discharge disabled, pack isolated from the bank: ' +
+                s.packs_with_discharge_disabled.join(', '));
+  b.className = 'banner ' + (issues.length ? 'b-bad' : 'b-ok');
+  b.textContent = issues.length ? issues.join(' · ')
+    : `All ${s.packs_reporting} packs reporting, no alarm flags set.`;
+}
+
+function renderTables(summary, rel, res) {
+  $('#rel').innerHTML = rel.map(r =>
+    `<tr><td>${r.label || r.mac}</td><td>${r.pct}% (${r.ok}/${r.total})</td></tr>`).join('')
+    || '<tr><td colspan="2">no poll data</td></tr>';
+  const packs = summary.packs || {};
+  const rp = (res && res.packs) || {};
+  $('#ir').innerHTML = Object.keys(rp).sort().map(k => {
+    const b = rp[k];
+    return b.status === 'ok'
+      ? `<tr><td>${k}</td><td>${b.resistance_mohm.toFixed(3)} mΩ &middot;
+         R²&nbsp;${b.r_squared} &middot; n=${b.samples}</td></tr>`
+      : `<tr><td>${k}</td><td class="hint">insufficient load data</td></tr>`;
+  }).join('') || '<tr><td colspan="2">no data</td></tr>';
+  if (res && res.spread_pct !== null && res.spread_pct !== undefined)
+    $('#ir').innerHTML += `<tr><td><b>spread</b></td><td><b>${res.spread_pct}%</b></td></tr>`;
+
+  $('#wear').innerHTML = Object.keys(packs).sort().map(k => {
+    const p = packs[k];
+    return `<tr><td>${k}</td><td>${fmt(p.full_charge_capacity_ah,2)} Ah &middot;
+            ${p.cycle_count} cyc</td></tr>`;
+  }).join('') || '<tr><td colspan="2">no data</td></tr>';
+}
+
+function renderCharts(hist) {
+  const allLabels = Object.keys(hist.packs).sort();
+  const shown = allLabels.filter(l => !hidden.has(l));
+  const ts = allLabels.length ? hist.packs[allLabels[0]].ts : [];
+
+  const mk = (field, canvasId, legendId, opts) => {
+    const series = shown.map(l => ({
+      color: colorFor(l, allLabels), data: hist.packs[l][field], ts: hist.packs[l].ts
+    }));
+    chart($(canvasId), ts, series, opts);
+    legend($(legendId), allLabels, opts && opts.extraLegend);
+  };
+
+  mk('cell_delta_mv', '#c_delta', '#l_delta', {
+    dec:0, zero:true, minSpan:10, thresholds: computeThresholds(hist),
+    extraLegend:'<span class="static"><i style="background:rgba(217,132,32,.75)"></i>watch</span>' +
+                '<span class="static"><i style="background:rgba(204,59,48,.75)"></i>investigate</span>'
+  });
+  mk('current', '#c_current', '#l_current', {dec:0, zero:true, minSpan:5});
+  drawFets(hist);
+  mk('voltage', '#c_volt', '#l_volt', {dec:2, minSpan:0.15});
+  mk('soc', '#c_soc', '#l_soc', {dec:0, minSpan:5});
+
+  // cell range: max solid, min dashed, same colour per pack
+  const cellSeries = [];
+  shown.forEach(l => {
+    cellSeries.push({color: colorFor(l, allLabels), data: hist.packs[l].cell_max, ts: hist.packs[l].ts});
+    cellSeries.push({color: colorFor(l, allLabels), data: hist.packs[l].cell_min, ts: hist.packs[l].ts, dash:true, thin:true});
+  });
+  chart($('#c_cells'), ts, cellSeries, {dec:3, minSpan:0.05});
+  legend($('#l_cells'), allLabels,
+    '<span class="static">solid = highest cell, dashed = lowest</span>');
+
+  // temperature: cell solid, mosfet thin dashed
+  const tSeries = [];
+  shown.forEach(l => {
+    tSeries.push({color: colorFor(l, allLabels), data: hist.packs[l].temp_cell, ts: hist.packs[l].ts});
+    tSeries.push({color: colorFor(l, allLabels), data: hist.packs[l].temp_mosfet, ts: hist.packs[l].ts, dash:true, thin:true});
+  });
+  chart($('#c_temp'), ts, tSeries, {dec:0, minSpan:4});
+  legend($('#l_temp'), allLabels,
+    '<span class="static">solid = cell, dashed = MOSFET</span>');
+}
+
+function redraw() {
+  if (!LAST) return;
+  renderCharts(LAST.hist);
+  drawStates(LAST.states);
+}
+
+// Build the query string once so every endpoint sees the same window,
+// whether it came from a preset or the custom pickers.
+function rangeQuery() {
+  if ($('#range').value !== 'custom')
+    return { qs: 'hours=' + $('#range').value, label: $('#range').selectedOptions[0].text };
+  const f = $('#fromAt').value, t = $('#toAt').value;
+  if (!f || !t)
+    return { qs: 'hours=6', label: '6 hours' };
+  return {
+    qs: 'from=' + encodeURIComponent(f) + '&to=' + encodeURIComponent(t),
+    label: f.replace('T', ' ') + ' → ' + t.replace('T', ' '),
+  };
+}
+
+async function load() {
+  const R = rangeQuery();
+  $('#meta').textContent = 'loading…';
+  try {
+    // Pack cards, banner and tables always describe the present. Only the
+    // charts follow the selected window, so switching to a historical range
+    // never makes the current state of the bank ambiguous.
+    const [latest, live, summary, hist, rel, states, res, info] = await Promise.all([
+      fetch('/bms/latest').then(r=>r.json()),
+      fetch('/bms/summary?hours=24').then(r=>r.json()),
+      fetch('/bms/summary?' + R.qs).then(r=>r.json()),
+      fetch('/bms/history?' + R.qs).then(r=>r.json()),
+      fetch('/bms/reliability?hours=24').then(r=>r.json()),
+      fetch('/bms/states?' + R.qs).then(r=>r.json()),
+      fetch('/bms/resistance?days=30').then(r=>r.json()),
+      fetch('/bms/packs').then(r=>r.json()).catch(()=>({packs:{}})),
+    ]);
+    LAST = {latest, live, summary, hist, rel, states, res, info};
+    renderBanner(live);
+    renderPacks(latest, res, info, live);
+    renderTables(live, rel, res);
+    renderCharts(hist);
+    drawStates(states);
+    renderEvents(states);
+    const charting = summary.window_is_live === false
+      ? 'charts: ' + R.label + ' (historical)' : R.label;
+    $('#meta').textContent = (summary.total_samples || 0) + ' samples · ' +
+      charting + ' · cards live, updated ' + new Date().toLocaleTimeString() +
+      (hidden.size ? ' · ' + hidden.size + ' hidden' : '');
+  } catch (e) {
+    $('#meta').textContent = 'error: ' + e;
+    $('#banner').className = 'banner b-bad';
+    $('#banner').textContent = 'Could not reach the BMS collector: ' + e;
+  }
+}
+
+$('#refresh').onclick = load;
+$('#range').onchange = () => {
+  const custom = $('#range').value === 'custom';
+  $('#customRange').style.display = custom ? 'inline-flex' : 'none';
+  if (custom) {
+    // Seed the pickers with the window currently on screen, so switching to
+    // custom starts from what you were already looking at.
+    if (!$('#fromAt').value) {
+      const now = new Date(), then = new Date(now.getTime() - 6 * 3600e3);
+      const fmt = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+                         .toISOString().slice(0, 16);
+      $('#fromAt').value = fmt(then);
+      $('#toAt').value = fmt(now);
+    }
+    return;   // wait for Apply rather than firing on an empty range
+  }
+  load();
+};
+$('#applyRange').onclick = load;
+window.addEventListener('resize', () => {
+  clearTimeout(window._rt);
+  window._rt = setTimeout(redraw, 200);
+});
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

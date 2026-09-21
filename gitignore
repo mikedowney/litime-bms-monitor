@@ -1,0 +1,10 @@
+# Your pack identities - MACs and serials are yours, not the repo's
+packs.json
+
+# Runtime state
+bms.db
+bms.db-wal
+bms.db-shm
+__pycache__/
+*.pyc
+service/

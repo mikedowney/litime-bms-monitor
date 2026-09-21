@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""
+bmsq — query the BMS database without needing the sqlite3 CLI package.
+
+Venus OS has under 100 MB free on /, so installing the sqlite3 command-line
+tool via opkg is not worth the space. Python's sqlite3 module is already
+present, which is all this needs.
+
+    ./bmsq                          show built-in report
+    ./bmsq "SELECT ..."             run arbitrary SQL
+    ./bmsq --csv "SELECT ..."       CSV output for piping
+    ./bmsq --tables                 list tables and columns
+    ./bmsq --latest                 most recent reading per pack
+    ./bmsq --reliability 24         poll success rate over N hours
+    ./bmsq --alarms 168             any non-zero alarm field over N hours
+"""
+
+import argparse
+import os
+import sys
+import time
+
+# Venus OS runs on UTC by design, and changing the system timezone would affect
+# Victron's own services. Set it for this process only, so timestamps match VRM.
+os.environ.setdefault("TZ", "America/Los_Angeles")
+time.tzset()
+
+import sqlite3  # imported after TZ so SQLite's localtime modifier picks it up
+
+DB = "/data/bms/bms.db"
+
+
+def show(rows, csv=False):
+    if not rows:
+        print("(no rows)")
+        return
+    cols = rows[0].keys()
+    if csv:
+        print(",".join(cols))
+        for r in rows:
+            print(",".join("" if r[c] is None else str(r[c]) for c in cols))
+        return
+    widths = {c: max(len(c), max(len(str(r[c])) for r in rows)) for c in cols}
+    widths = {c: min(w, 34) for c, w in widths.items()}
+    print("  ".join(c[:widths[c]].ljust(widths[c]) for c in cols))
+    print("  ".join("-" * widths[c] for c in cols))
+    for r in rows:
+        print("  ".join(str(r[c])[:widths[c]].ljust(widths[c]) for c in cols))
+    print("\n%d row(s)" % len(rows))
+
+
+def main():
+    p = argparse.ArgumentParser(add_help=True)
+    p.add_argument("sql", nargs="?")
+    p.add_argument("--db", default=DB)
+    p.add_argument("--csv", action="store_true")
+    p.add_argument("--tables", action="store_true")
+    p.add_argument("--latest", action="store_true")
+    p.add_argument("--reliability", type=float, metavar="HOURS")
+    p.add_argument("--alarms", type=float, metavar="HOURS")
+    a = p.parse_args()
+
+    c = sqlite3.connect(a.db)
+    c.row_factory = sqlite3.Row
+
+    def q(sql, args=()):
+        show([r for r in c.execute(sql, args)], a.csv)
+
+    if a.tables:
+        for (name,) in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+            cols = [r[1] for r in c.execute("PRAGMA table_info(%s)" % name)]
+            n = c.execute("SELECT COUNT(*) FROM %s" % name).fetchone()[0]
+            print("\n%s  (%d rows)" % (name, n))
+            print("  " + ", ".join(cols))
+        return
+
+    if a.latest:
+        q("""SELECT label, datetime(ts,'unixepoch','localtime') AS time,
+                    ROUND(voltage,3) v, ROUND(current,2) a, soc,
+                    ROUND(soc_drift,2) drift, cell_delta_mv delta_mv,
+                    ROUND(cell_min,3) cmin, ROUND(cell_max,3) cmax,
+                    temp_cell tc, temp_mosfet tm, state, cycles,
+                    ROUND(capacity,2) cap_ah
+             FROM samples s WHERE ts = (SELECT MAX(ts) FROM samples
+                                        WHERE mac = s.mac) ORDER BY label""")
+        return
+
+    if a.reliability is not None:
+        q("""SELECT mac, COUNT(*) attempts, SUM(ok) ok,
+                    ROUND(100.0*SUM(ok)/COUNT(*),1) pct
+             FROM polls WHERE ts >= ? GROUP BY mac ORDER BY pct""",
+          (time.time() - a.reliability * 3600,))
+        print("\nRecent failures:")
+        q("""SELECT datetime(ts,'unixepoch','localtime') time, mac, error
+             FROM polls WHERE ok = 0 AND ts >= ?
+             ORDER BY ts DESC LIMIT 15""",
+          (time.time() - a.reliability * 3600,))
+        return
+
+    if a.alarms is not None:
+        q("""SELECT datetime(ts,'unixepoch','localtime') time, label,
+                    protections, protection_raw, failure_raw, balancing,
+                    ROUND(cell_max,3) cmax, ROUND(cell_min,3) cmin, temp_cell
+             FROM samples
+             WHERE ts >= ? AND (protection_raw != 0 OR failure_raw != 0
+                                OR balancing != '[]')
+             ORDER BY ts DESC LIMIT 50""",
+          (time.time() - a.alarms * 3600,))
+        return
+
+    if a.sql:
+        try:
+            q(a.sql)
+        except sqlite3.Error as e:
+            print("SQL error: %s" % e, file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # Default report
+    n = c.execute("SELECT COUNT(*) n, MIN(ts) a, MAX(ts) b FROM samples").fetchone()
+    if not n["n"]:
+        print("Database is empty. Is the collector running?")
+        return
+    print("samples: %d   span: %s -> %s" % (
+        n["n"],
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(n["a"])),
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(n["b"]))))
+    print("\n--- latest per pack ---")
+    q("""SELECT label, datetime(ts,'unixepoch','localtime') time,
+                ROUND(voltage,3) v, ROUND(current,2) a, soc,
+                cell_delta_mv delta_mv, temp_cell tc, state
+         FROM samples s WHERE ts = (SELECT MAX(ts) FROM samples
+                                    WHERE mac = s.mac) ORDER BY label""")
+    print("\n--- last 24h per pack ---")
+    q("""SELECT label, COUNT(*) n,
+                ROUND(MIN(voltage),3) vmin, ROUND(MAX(voltage),3) vmax,
+                ROUND(MIN(current),1) amin, ROUND(MAX(current),1) amax,
+                MIN(cell_delta_mv) dmin, MAX(cell_delta_mv) dmax,
+                MAX(temp_mosfet) tmax,
+                SUM(CASE WHEN protection_raw!=0 OR failure_raw!=0 THEN 1 ELSE 0 END) alarms
+         FROM samples WHERE ts >= ? GROUP BY label ORDER BY label""",
+      (time.time() - 86400,))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,211 @@
+[
+  {
+    "id": "tab_bms_alerts",
+    "type": "tab",
+    "label": "BMS Alerts",
+    "disabled": false,
+    "info": "Deterministic BMS alerting, separate from the daily Gemini report.\n\nPolls the collector on the Cerbo every 15 minutes and emails when a\ncondition that needs action appears. Evaluation is explicit rather than\nAI-judged, so it cannot miss a threshold or invent one.\n\nCRITICAL conditions re-notify every 12 hours while unresolved.\nWARNING conditions notify once per 24 hours.\nA resolved condition sends one all-clear.\n\nDedupe state lives in flow context, so a Node-RED restart may repeat one\nnotification for an active condition. That is deliberate: better a\nduplicate than a missed alert.\n\nThe collector being unreachable is itself a critical alert - the failure\nmode this is most meant to catch is the monitoring silently dying."
+  },
+  {
+    "id": "bms_alert_comment",
+    "type": "comment",
+    "z": "tab_bms_alerts",
+    "name": "Poll the BMS collector every 15 min and email anything that needs action",
+    "info": "Thresholds live in the 'Evaluate Conditions' function node.\nBaselines were measured on this bank: 2.07 A current deadband,\n14-21 mV resting cell spread, 0.2-0.4 mOhm internal resistance.",
+    "x": 330,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "bms_alert_tick",
+    "type": "inject",
+    "z": "tab_bms_alerts",
+    "name": "Every 15 minutes",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "900",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "60",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 100,
+    "wires": [
+      [
+        "bms_alert_fetch"
+      ]
+    ]
+  },
+  {
+    "id": "bms_alert_fetch",
+    "type": "http request",
+    "z": "tab_bms_alerts",
+    "name": "Fetch BMS summary",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "http://127.0.0.1:8088/bms/summary?hours=1",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 370,
+    "y": 100,
+    "wires": [
+      [
+        "bms_alert_eval"
+      ]
+    ]
+  },
+  {
+    "id": "bms_alert_eval",
+    "type": "function",
+    "z": "tab_bms_alerts",
+    "name": "Evaluate Conditions",
+    "func": "// ---------------------------------------------------------------\n// Deterministic BMS alert evaluation.\n//\n// Every rule below is explicit. Thresholds come from measurements on\n// this specific bank, not from generic guidance:\n//   current deadband      2.07 A   (verified: nothing between 0 and 2.07)\n//   resting cell spread   14-21 mV\n//   loaded cell spread    35-50 mV\n//   internal resistance   0.2-0.4 mOhm per pack\n//   pack rating           200 A continuous, 4 packs = 800 A bank\n// ---------------------------------------------------------------\n\nconst CRIT_REPEAT_H = 12;   // re-notify an unresolved critical this often\nconst WARN_REPEAT_H = 24;\nconst MISSING_PACK_GRACE_MIN = 30;  // BLE drops are routine; wait before alarming\n\nconst s = msg.payload;\nconst now = Date.now();\nconst alerts = [];\n\nfunction add(sev, id, title, detail) {\n    alerts.push({ sev, id, title, detail });\n}\n\n// --- collector reachable at all? -------------------------------------\n// This is the failure this whole flow exists to catch: monitoring that\n// has quietly stopped. A non-object payload or an HTTP error means the\n// service is down, the Cerbo is unreachable, or the port moved.\nif (msg.statusCode && msg.statusCode !== 200) {\n    add('CRITICAL', 'collector_http',\n        'BMS collector returned HTTP ' + msg.statusCode,\n        'No battery telemetry is being collected. Check: svstat /service/bms-collector');\n} else if (!s || typeof s !== 'object') {\n    add('CRITICAL', 'collector_unreachable',\n        'BMS collector unreachable',\n        'No response from http://127.0.0.1:8088. The service may have stopped.');\n} else if (s.status === 'no_data') {\n    add('CRITICAL', 'collector_no_data',\n        'BMS collector is running but has no recent samples',\n        s.note || 'The poller may be stopped or Bluetooth may have failed.');\n} else {\n\n    // --- packs missing ------------------------------------------------\n    // Tracked with a first-seen timestamp so a single missed BLE poll\n    // does not page you. Only sustained absence counts.\n    const seenSince = flow.get('missingSince') || {};\n    if (s.packs_reporting < s.packs_expected) {\n        if (!seenSince.missing) seenSince.missing = now;\n        const mins = Math.round((now - seenSince.missing) / 60000);\n        if (mins >= MISSING_PACK_GRACE_MIN) {\n            add('CRITICAL', 'packs_missing',\n                `Only ${s.packs_reporting} of ${s.packs_expected} packs reporting (${mins} min)`,\n                'A pack has stopped answering over Bluetooth. You are blind to it; '\n                + 'it has not necessarily failed. Check the dashboard timeline.');\n        }\n    } else {\n        delete seenSince.missing;\n    }\n    flow.set('missingSince', seenSince);\n\n    // --- discharge disabled: pack isolated from the bank ---------------\n    // Sets no protection or failure bit and the cells look healthy, so\n    // nothing else would surface it.\n    (s.packs_with_discharge_disabled || []).forEach(p => {\n        add('CRITICAL', 'discharge_off_' + p,\n            `${p}: discharge disabled`,\n            'This pack is electrically isolated and carries none of the load. '\n            + 'The remaining packs take its share. Re-enable via the LiTime app '\n            + '(stop the collector first), or power-cycle the pack.');\n    });\n\n    // --- charge FET open while charge is actually available -------------\n    // The flag on its own is normal: every healthy pack opens its charge\n    // FET on reaching full, and at a dock a full pack may sit that way for\n    // a long time. What is not normal is refusing charge while the other\n    // packs are taking real current - that pack is not participating.\n    const charging = Object.keys(s.packs || {}).filter(k => {\n        const c = (s.packs[k] || {}).current_a || {};\n        return c.max != null && c.max > 10;\n    });\n    if (charging.length >= 2) {\n        (s.packs_not_accepting_charge || []).forEach(p => {\n            const c = (s.packs[p] || {}).current_a || {};\n            if (c.max != null && c.max <= 2)\n                add('WARNING', 'charge_refused_' + p,\n                    `${p}: not accepting charge while the bank is charging`,\n                    `${charging.length} packs are taking current and this one is not. `\n                    + 'Normal only if it is genuinely full first; if it persists across '\n                    + 'a discharge and recharge, the pack may be stuck believing it is '\n                    + 'full. A full power-off via the LiTime app clears that state.');\n        });\n    }\n\n    // --- charge blocked continuously for days ---------------------------\n    // Slower signal for the case above when the bank never charges hard\n    // enough to trigger it. Tracked here because the summary window is\n    // only an hour.\n    const blockedSince = flow.get('chargeBlockedSince') || {};\n    Object.keys(s.packs || {}).forEach(k => {\n        if ((s.packs[k] || {}).charge_blocked_now) {\n            if (!blockedSince[k]) blockedSince[k] = now;\n            const hrs = Math.round((now - blockedSince[k]) / 3600000);\n            if (hrs >= 48)\n                add('WARNING', 'charge_blocked_long_' + k,\n                    `${k}: charge FET open continuously for ${hrs} h`,\n                    'A pack that never re-accepts charge across multiple days is '\n                    + 'likely stuck believing it is full, and is doing less work than '\n                    + 'its siblings. Compare cycle counts on the dashboard.');\n        } else {\n            delete blockedSince[k];\n        }\n    });\n    flow.set('chargeBlockedSince', blockedSince);\n\n    // --- BMS protection / failure bits --------------------------------\n    if (s.any_alarm_flag_set) {\n        Object.keys(s.packs || {}).forEach(k => {\n            const a = (s.packs[k] || {}).alarms || {};\n            const bits = []\n                .concat(a.protections_seen || [])\n                .concat(a.protection_raw_nonzero || [])\n                .concat(a.failure_field_nonzero || []);\n            if (bits.length) {\n                add('CRITICAL', 'alarm_' + k,\n                    `${k}: BMS alarm flag set`,\n                    'Flags: ' + bits.join(', ') + '. Note the bit definitions are '\n                    + 'inherited and unvalidated - treat any non-zero value as '\n                    + '\"something tripped\" and inspect directly.');\n            }\n        });\n    }\n\n    // --- cell voltage limits ------------------------------------------\n    Object.keys(s.packs || {}).forEach(k => {\n        const p = s.packs[k] || {};\n        const cv = p.cell_v || {};\n        if (cv.max != null && cv.max > 3.65)\n            add('CRITICAL', 'cell_high_' + k,\n                `${k}: cell at ${cv.max.toFixed(3)} V`,\n                'Above the 3.65 V practical ceiling for LiFePO4. Overvoltage '\n                + 'protection trips near 3.75 V. Reduce charge voltage.');\n        if (cv.min != null && cv.min < 2.50)\n            add('CRITICAL', 'cell_low_' + k,\n                `${k}: cell at ${cv.min.toFixed(3)} V`,\n                'Below the 2.50 V floor. Capacity is being removed permanently. '\n                + 'Stop discharging and recharge.');\n\n        // --- temperature -----------------------------------------------\n        const t = p.temp_c || {};\n        if (t.cell_max != null && t.cell_max > 55)\n            add('CRITICAL', 'temp_high_' + k,\n                `${k}: cell temperature ${t.cell_max} C`,\n                'Above 55 C the BMS should be limiting current. Investigate '\n                + 'ventilation and load.');\n        else if (t.cell_max != null && t.cell_max > 45)\n            add('WARNING', 'temp_warm_' + k,\n                `${k}: cell temperature ${t.cell_max} C`,\n                'Above 45 C ageing accelerates markedly.');\n\n        // Charging below freezing causes lithium plating - permanent and a\n        // genuine safety issue. The BMS should block it; this verifies it did.\n        const cur = p.current_a || {};\n        if (t.cell_min != null && t.cell_min < 0 && cur.max != null && cur.max > 2)\n            add('CRITICAL', 'cold_charge_' + k,\n                `${k}: charging at ${t.cell_min} C`,\n                'Charging below 0 C causes lithium plating - permanent damage. '\n                + 'Stop charging until the pack warms.');\n    });\n\n    // --- pack-to-pack temperature spread -------------------------------\n    const temps = Object.keys(s.packs || {})\n        .map(k => ((s.packs[k] || {}).temp_c || {}).cell_max)\n        .filter(v => v != null);\n    if (temps.length >= 2 && (Math.max(...temps) - Math.min(...temps)) > 5)\n        add('WARNING', 'temp_spread',\n            `Pack temperatures differ by ${Math.max(...temps) - Math.min(...temps)} C`,\n            'Identical packs sharing a compartment should track within a couple '\n            + 'of degrees. A consistently hotter pack is carrying more current, '\n            + 'has higher internal resistance, or has restricted airflow.');\n\n    // --- current sharing under real load -------------------------------\n    // Only meaningful above the deadband, which the collector already\n    // enforces by only including samples over 10 A.\n    Object.keys(s.current_sharing || {}).forEach(phase => {\n        const sh = s.current_sharing[phase] || {};\n        if (sh.spread_pct != null && sh.spread_pct > 15)\n            add('WARNING', 'sharing_' + phase,\n                `Current sharing ${sh.spread_pct}% apart on ${phase}`,\n                'Healthy is within about 3%. Sustained deviation suggests a cable, '\n                + 'terminal or fuse with elevated resistance on the odd pack.');\n    });\n\n    // --- cell spread, judged against the bank's condition ---------------\n    Object.keys(s.packs || {}).forEach(k => {\n        const p = s.packs[k] || {};\n        const d = p.cell_delta_mv || {};\n        const cv = p.cell_v || {};\n        const cur = p.current_a || {};\n        if (d.max == null) return;\n        // LiFePO4 is flat between 3.20 and 3.40 V, so the same imbalance\n        // shows as a much smaller number there than at the top of charge.\n        const loaded = (cur.max != null && Math.abs(cur.max) > 20) ||\n                       (cur.min != null && Math.abs(cur.min) > 20);\n        const limit = loaded ? 120 : (cv.max != null && cv.max >= 3.45 ? 100 : 60);\n        if (d.max > limit)\n            add('WARNING', 'spread_' + k,\n                `${k}: cell spread ${d.max} mV`,\n                `Above the ${limit} mV limit for the current condition. A single `\n                + 'excursion means little; a pack trending upward at the same '\n                + 'operating point over weeks indicates a cell losing capacity.');\n    });\n}\n\n// ---------------------------------------------------------------\n// Deduplication. Notify on first appearance, then repeat only after\n// the interval for that severity. Send one all-clear when a condition\n// that was notified goes away.\n// ---------------------------------------------------------------\nconst state = flow.get('alertState') || {};\nconst active = {};\nconst toSend = [];\n\nalerts.forEach(a => {\n    active[a.id] = true;\n    const prev = state[a.id];\n    const repeatMs = (a.sev === 'CRITICAL' ? CRIT_REPEAT_H : WARN_REPEAT_H) * 3600000;\n    if (!prev) {\n        toSend.push(Object.assign({ kind: 'NEW' }, a));\n        state[a.id] = { first: now, last: now, sev: a.sev, title: a.title };\n    } else if (now - prev.last >= repeatMs) {\n        const hrs = Math.round((now - prev.first) / 3600000);\n        toSend.push(Object.assign({ kind: 'ONGOING', hours: hrs }, a));\n        prev.last = now;\n    }\n});\n\nObject.keys(state).forEach(id => {\n    if (!active[id]) {\n        const hrs = Math.round((now - state[id].first) / 3600000);\n        toSend.push({ kind: 'RESOLVED', sev: state[id].sev, id,\n                      title: state[id].title,\n                      detail: `Cleared after about ${hrs} h.` });\n        delete state[id];\n    }\n});\n\nflow.set('alertState', state);\n\nnode.status({\n    fill: alerts.some(a => a.sev === 'CRITICAL') ? 'red'\n        : alerts.length ? 'yellow' : 'green',\n    shape: 'dot',\n    text: alerts.length ? `${alerts.length} active` : 'all clear'\n});\n\nif (!toSend.length) return null;\n\nmsg.alerts = toSend;\nmsg.summary = s;\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 610,
+    "y": 100,
+    "wires": [
+      [
+        "bms_alert_format",
+        "bms_alert_debug"
+      ]
+    ]
+  },
+  {
+    "id": "bms_alert_format",
+    "type": "function",
+    "z": "tab_bms_alerts",
+    "name": "Format Email",
+    "func": "const a = msg.alerts || [];\nconst s = msg.summary || {};\nconst crit = a.filter(x => x.sev === 'CRITICAL' && x.kind !== 'RESOLVED');\nconst warn = a.filter(x => x.sev === 'WARNING' && x.kind !== 'RESOLVED');\nconst done = a.filter(x => x.kind === 'RESOLVED');\n\n// Subject leads with the worst thing, so it is readable on a phone\n// lock screen without opening the message.\nlet subject;\nif (crit.length) subject = 'BMS CRITICAL: ' + crit[0].title + (crit.length > 1 ? ` (+${crit.length - 1} more)` : '');\nelse if (warn.length) subject = 'BMS warning: ' + warn[0].title + (warn.length > 1 ? ` (+${warn.length - 1} more)` : '');\nelse subject = 'BMS resolved: ' + done[0].title;\n\nconst L = [];\nL.push('Apogee battery bank \u2014 ' + new Date().toLocaleString());\nL.push('');\n\nfunction block(title, items) {\n    if (!items.length) return;\n    L.push(title);\n    L.push('-'.repeat(title.length));\n    items.forEach(x => {\n        L.push((x.kind === 'ONGOING' ? `[still active after ${x.hours} h] ` : '') + x.title);\n        L.push('    ' + x.detail);\n        L.push('');\n    });\n}\n\nblock('CRITICAL', crit);\nblock('WARNING', warn);\nblock('RESOLVED', done);\n\nif (s.packs) {\n    L.push('Current state');\n    L.push('-------------');\n    Object.keys(s.packs).sort().forEach(k => {\n        const p = s.packs[k];\n        const v = (p.voltage_v || {}).max;\n        const soc = (p.soc_pct || {}).last;\n        const d = (p.cell_delta_mv || {}).max;\n        const t = (p.temp_c || {}).cell_max;\n        // Surface FET state in the state block: a pack can be healthy on\n        // every other number while sitting isolated from the bank.\n        const fet = p.discharge_disabled_now ? '  [DISCHARGE OFF]'\n                  : (p.charge_blocked_now ? '  [chg FET open]' : '');\n        L.push(`${k}: ${v != null ? v.toFixed(3) + ' V' : '-'}  SoC ${soc != null ? soc + '%' : '-'}`\n             + `  spread ${d != null ? d + ' mV' : '-'}  ${t != null ? t + ' C' : '-'}${fet}`);\n    });\n    L.push('');\n    L.push(`Packs participating: ${s.packs_participating}/${s.packs_expected}`);\n}\n\nL.push('');\nL.push('Dashboard: http://<gx-ip>:8088/');\nL.push('Docs:      http://<gx-ip>:8088/docs');\n\n// Return a clean message rather than mutating the one that came from the\n// HTTP request node. Leftover properties - msg.headers and msg.statusCode\n// in particular - make the e-mail node treat the body as a document and\n// send it as an attachment instead of inline text.\nreturn {\n    topic: subject,\n    payload: L.join('\\n'),\n};\n",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 830,
+    "y": 100,
+    "wires": [
+      [
+        "bms_alert_email"
+      ]
+    ]
+  },
+  {
+    "id": "bms_alert_email",
+    "type": "e-mail",
+    "z": "tab_bms_alerts",
+    "server": "smtp.gmail.com",
+    "port": "465",
+    "authtype": "BASIC",
+    "saslformat": false,
+    "token": "oauth2Response.access_token",
+    "secure": true,
+    "tls": true,
+    "name": "you@example.com",
+    "dname": "BMS Alert",
+    "x": 1050,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "bms_alert_debug",
+    "type": "debug",
+    "z": "tab_bms_alerts",
+    "name": "Alert output",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1040,
+    "y": 140,
+    "wires": []
+  },
+  {
+    "id": "bms_alert_test",
+    "type": "inject",
+    "z": "tab_bms_alerts",
+    "name": "Test now",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 140,
+    "y": 160,
+    "wires": [
+      [
+        "bms_alert_fetch"
+      ]
+    ]
+  },
+  {
+    "id": "bms_alert_reset",
+    "type": "inject",
+    "z": "tab_bms_alerts",
+    "name": "Clear alert state",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 220,
+    "wires": [
+      [
+        "bms_alert_clear"
+      ]
+    ]
+  },
+  {
+    "id": "bms_alert_clear",
+    "type": "function",
+    "z": "tab_bms_alerts",
+    "name": "Reset dedupe",
+    "func": "// Forget what has already been notified, so the next poll re-sends any\n// still-active condition. Useful after changing thresholds.\nflow.set('alertState', {});\nflow.set('missingSince', {});\nflow.set('chargeBlockedSince', {});\nnode.status({ fill: 'blue', shape: 'dot', text: 'state cleared' });\nreturn null;\n",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 220,
+    "wires": [
+      []
+    ]
+  }
+]
