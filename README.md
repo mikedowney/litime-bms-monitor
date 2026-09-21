@@ -4,6 +4,13 @@ Read-only Bluetooth monitoring for LiTime-family LiFePO₄ battery packs, runnin
 Victron Cerbo GX. Logs every pack individually, serves a dashboard, and emails you
 when something needs attention.
 
+![The dashboard, showing a four-pack bank](docs/dashboard.png)
+
+*The complete dashboard from a running installation — four 320 Ah packs in parallel.
+Serials and Bluetooth addresses are blurred; everything else is real data. Every chart
+carries a written explanation of what healthy looks like, so the page can be read
+correctly by someone who didn't build it.*
+
 ---
 
 ## What it does, in plain terms
